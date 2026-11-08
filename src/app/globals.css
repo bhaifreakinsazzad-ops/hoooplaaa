@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #F7F8FA;
+  --color-surface: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-ink-primary: #102033;
+  --color-ink-secondary: #4A5B70;
+  --color-accent-gold: #D9B45E;
+  --color-accent-pale: #F4D58D;
+  --color-navy-deep: #071525;
+}
+
+/* Concept A: Executive Prestige (Dark Midnight Navy Dominant) */
+[data-theme="concept-a"] {
+  --color-bg: #071525;
+  --color-surface: #10283E;
+  --color-border: rgba(217, 180, 94, 0.25);
+  --color-ink-primary: #FFFCF5;
+  --color-ink-secondary: #CBD5E1;
+  --color-accent-gold: #D9B45E;
+  --color-accent-pale: #F4D58D;
+  --color-navy-deep: #0B1A2A;
+}
+
+/* Concept B: Nordic Clean Ivory & Precision (Light & Crisp) */
+[data-theme="concept-b"] {
+  --color-bg: #FFFCF5;
+  --color-surface: #FFFFFF;
+  --color-border: #E5E7EB;
+  --color-ink-primary: #0F172A;
+  --color-ink-secondary: #64748B;
+  --color-accent-gold: #B8923E;
+  --color-accent-pale: #FDF8EC;
+  --color-navy-deep: #071525;
+}
+
+/* Concept C: Modern High-Conversion Direct Commerce (Strategic Dual-Tone) */
+[data-theme="concept-c"] {
+  --color-bg: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-border: #CBD5E1;
+  --color-ink-primary: #0F172A;
+  --color-ink-secondary: #475569;
+  --color-accent-gold: #D9B45E;
+  --color-accent-pale: #F4D58D;
+  --color-navy-deep: #071525;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink-primary);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-delay: -1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    background-attachment: initial !important;
+    scroll-behavior: auto !important;
+    transition-delay: 0s !important;
+    transition-duration: 0s !important;
+  }
+}

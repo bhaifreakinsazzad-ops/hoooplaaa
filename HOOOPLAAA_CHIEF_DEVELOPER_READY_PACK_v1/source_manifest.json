@@ -1,0 +1,52 @@
+{
+  "pack": "HOOOPLAAA CHIEF DEVELOPER READY PACK",
+  "version": "1.0",
+  "created": "2026-11-08",
+  "content_basis": [
+    {
+      "id": "D1",
+      "name": "Hoooplaaa_Incorporated_Complete_Overview_Knowledge_Base_v2.0 (1).docx",
+      "role": "operations / earlier technical handoff"
+    },
+    {
+      "id": "D2",
+      "name": "HOOOPLAAA_Master_History_Knowledge_Base_2026-11-08.md",
+      "role": "distinct historical content"
+    },
+    {
+      "id": "D3",
+      "name": "HOOOPLAAA_Master_History_Knowledge_Base_2026-11-08.docx",
+      "role": "duplicate format of D2"
+    },
+    {
+      "id": "D4",
+      "name": "HOOOPLAAA_Master_History_Knowledge_Base_2026-11-08.pdf",
+      "role": "duplicate format of D2"
+    },
+    {
+      "id": "M3",
+      "name": "HOOOPLAAA_HOLY_GRAIL_MASTER_KNOWLEDGE_BASE_v3_2026-11-08.md",
+      "role": "normalized primary business knowledge"
+    },
+    {
+      "id": "S3",
+      "name": "HOOOPLAAA_Service_Registry_2026-11-08.csv",
+      "role": "49 service price references; not all approved for sale"
+    },
+    {
+      "id": "U",
+      "name": "Current Hoooplaaa conversation as of 2026-11-08",
+      "role": "latest owner-confirmed working decisions"
+    }
+  ],
+  "external_official_docs_reviewed": [
+    "https://nextjs.org/docs/app",
+    "https://nextjs.org/docs/app/guides/authentication",
+    "https://supabase.com/docs/guides/getting-started/quickstarts/nextjs",
+    "https://supabase.com/docs/guides/auth/server-side",
+    "https://supabase.com/docs/guides/database/postgres/row-level-security",
+    "https://sslcommerz.com/integration-document/"
+  ],
+  "release_policy": "No self-service checkout for any unapproved/blocked/source-listed products. No provider/payment production claims without sandbox/live evidence.",
+  "checkout_seed_status": "all_false"
+}

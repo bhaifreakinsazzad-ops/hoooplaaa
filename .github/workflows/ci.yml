@@ -1,0 +1,46 @@
+name: HOOOPLAAA Production CI & Security Gate
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+
+env:
+  SUPABASE_TEST_BRIDGE: 'true'
+
+jobs:
+  verify-build-and-tests:
+    name: Typecheck, Unit/RLS Tests, Build & Multi-Actor Browser E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: TypeScript Strict Verification
+        run: npx tsc --noEmit
+
+      - name: Run Vitest Suite (Pricing, Order Lifecycle, Payment Security, PostgreSQL 16 RLS)
+        run: npm test
+
+      - name: Build Production Next.js Application
+        run: npm run build
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Multi-Actor Playwright Browser E2E Suite
+        run: npm run test:e2e
