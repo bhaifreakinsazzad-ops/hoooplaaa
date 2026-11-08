@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { Currency, Order, PaymentAttempt, PaymentMethod } from './types';
+import { Currency, Order, PaymentMethod } from './types';
 import { persistentDB } from './persistent-db';
 
 export interface PaymentInitiationResult {
@@ -42,40 +42,21 @@ export function isProductionOrStagingEnv(): boolean {
 }
 
 /**
- * Database-backed Payment Ledger (V5).
- * Replaces process-memory Sets/Maps with durable SQL persistence and UNIQUE constraints.
+ * Stateless PostgreSQL-backed Payment Ledger (V6).
+ * All in-memory Maps and Sets have been eliminated.
+ * Every payment attempt and replay-protection event is persisted in PostgreSQL (`payments` & `payment_events`).
  */
 export class PaymentLedger {
-  private static attemptsCache = new Map<string, PaymentAttempt>();
-  private static eventsCache = new Set<string>();
-
-  public static isDuplicateEvent(eventId: string): boolean {
-    return this.eventsCache.has(eventId);
-  }
-
-  public static recordEvent(eventId: string): void {
-    this.eventsCache.add(eventId);
-  }
-
-  public static saveAttempt(attempt: PaymentAttempt): void {
-    this.attemptsCache.set(attempt.id, attempt);
-  }
-
-  public static getAttempt(attemptId: string): PaymentAttempt | undefined {
-    return this.attemptsCache.get(attemptId);
-  }
-
-  public static clearAllForTesting(): void {
-    this.attemptsCache.clear();
-    this.eventsCache.clear();
+  public static async clearAllForTesting(): Promise<void> {
+    await persistentDB.clearAllForTesting();
   }
 }
 
 /**
- * Official SSLCOMMERZ Payment Adapter (V5)
+ * Official SSLCOMMERZ Payment Adapter (V6)
  * - Uses official Session API (`gwprocess/v4/api.php`) and Server-to-Server Order Validation API (`validator/api/validationserverAPI.php`).
  * - Never substitutes a local simulator when a real gateway call fails in production or staging.
- * - Enforces database-backed payment attempts, unique event identifiers, and amount/currency verification against authoritative order records.
+ * - Reads payment attempts and enforces unique replay protection strictly from PostgreSQL (`payments` and `payment_events`).
  */
 export class SSLCommerzAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'sslcommerz';
@@ -174,21 +155,8 @@ export class SSLCommerzAdapter implements PaymentProvider {
     }
 
     const now = new Date().toISOString();
-    const attempt: PaymentAttempt = {
-      id: attemptId,
-      orderId: order.id,
-      provider: 'sslcommerz',
-      idempotencyKey,
-      amountMinor: order.totalMinor,
-      currency: order.currency,
-      status: 'pending',
-      gatewayUrl,
-      createdAt: now,
-    };
 
-    PaymentLedger.saveAttempt(attempt);
-
-    // Ensure order exists in relational DB before recording foreign-keyed payment attempt
+    // Ensure order exists in PostgreSQL before recording foreign-keyed payment attempt
     await persistentDB.saveOrder(order);
     await persistentDB.recordPaymentAttempt({
       id: attemptId,
@@ -293,8 +261,8 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Lookup authoritative payment attempt
-    const attempt = PaymentLedger.getAttempt(incomingTranId);
+    // Lookup authoritative payment attempt directly from PostgreSQL `public.payments`
+    const attempt = await persistentDB.getPaymentByAttemptId(incomingTranId);
     if (!attempt) {
       return {
         isValid: false,
@@ -303,14 +271,14 @@ export class SSLCommerzAdapter implements PaymentProvider {
         status: 'verified_failed',
         amountMinor: 0,
         currency: 'BDT',
-        reason: `Payment attempt ${incomingTranId} not found in authoritative records.`,
+        reason: `Payment attempt ${incomingTranId} not found in authoritative PostgreSQL records.`,
       };
     }
 
-    // Lookup authoritative order from database to cross-check amount & currency
+    // Lookup authoritative order from PostgreSQL `public.orders` to cross-check amount & currency
     const dbOrder = await persistentDB.getOrder(attempt.orderId);
     const authoritativeAmountMinor = dbOrder ? dbOrder.totalMinor : attempt.amountMinor;
-    const authoritativeCurrency = dbOrder ? dbOrder.currency : attempt.currency;
+    const authoritativeCurrency = (dbOrder ? dbOrder.currency : attempt.currency) as Currency;
 
     // Determine verified transaction attributes via Server-to-Server Validation API when credentials exist
     let verifiedStatus = (payload.status as string) || '';
@@ -389,19 +357,7 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Concurrency-safe database idempotency & replay check
-    if (PaymentLedger.isDuplicateEvent(valId)) {
-      return {
-        isValid: false,
-        paymentAttemptId: incomingTranId,
-        orderId: attempt.orderId,
-        status: 'verified_failed',
-        amountMinor: 0,
-        currency: 'BDT',
-        reason: `Duplicate payment event detected: ${valId} has already been processed.`,
-      };
-    }
-
+    // Concurrency-safe database idempotency & replay check in PostgreSQL `public.payment_events`
     const claim = await persistentDB.claimUniquePaymentEvent({
       eventKey: `sslcommerz:${valId}`,
       orderId: attempt.orderId,
@@ -427,8 +383,6 @@ export class SSLCommerzAdapter implements PaymentProvider {
           `Duplicate payment event detected: ${valId} has already been processed.`,
       };
     }
-
-    PaymentLedger.recordEvent(valId);
 
     await persistentDB.recordPaymentAttempt({
       id: attempt.id,
@@ -458,8 +412,9 @@ export class SSLCommerzAdapter implements PaymentProvider {
 }
 
 /**
- * Manual MFS / Bank Reference Adapter
+ * Manual MFS / Bank Reference Adapter (V6)
  * Strictly remains pending until approved by an authenticated finance/admin officer.
+ * Reads and persists payment attempts in PostgreSQL (`public.payments`).
  */
 export class ManualMFSAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'manual_mfs';
@@ -470,19 +425,6 @@ export class ManualMFSAdapter implements PaymentProvider {
   ): Promise<PaymentInitiationResult> {
     const attemptId = `pay_mfs_${crypto.randomBytes(6).toString('hex')}`;
     const now = new Date().toISOString();
-
-    const attempt: PaymentAttempt = {
-      id: attemptId,
-      orderId: order.id,
-      provider: 'manual_mfs',
-      idempotencyKey,
-      amountMinor: order.totalMinor,
-      currency: order.currency,
-      status: 'pending',
-      createdAt: now,
-    };
-
-    PaymentLedger.saveAttempt(attempt);
 
     await persistentDB.saveOrder(order);
     await persistentDB.recordPaymentAttempt({
@@ -531,7 +473,7 @@ export class ManualMFSAdapter implements PaymentProvider {
       };
     }
 
-    const attempt = PaymentLedger.getAttempt(attemptId);
+    const attempt = await persistentDB.getPaymentByAttemptId(attemptId);
     if (!attempt) {
       return {
         isValid: false,
@@ -552,7 +494,7 @@ export class ManualMFSAdapter implements PaymentProvider {
         orderId: attempt.orderId,
         status: 'pending',
         amountMinor: attempt.amountMinor,
-        currency: attempt.currency,
+        currency: attempt.currency as Currency,
         reason: 'Awaiting human finance officer statement verification.',
       };
     }
@@ -563,7 +505,7 @@ export class ManualMFSAdapter implements PaymentProvider {
       orderId: attempt.orderId,
       status: 'verified_paid',
       amountMinor: attempt.amountMinor,
-      currency: attempt.currency,
+      currency: attempt.currency as Currency,
     };
   }
 }

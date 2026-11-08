@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   authenticateCredentials,
   authenticateRequest,
-  issueSessionToken,
+  registerCustomerWithSupabaseAuth,
   SESSION_COOKIE_NAME,
+  LEGACY_SESSION_COOKIE_NAME,
 } from '@/domain/auth-guard';
 import { persistentDB } from '@/domain/persistent-db';
 
@@ -19,42 +20,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Optional self-service customer registration (always assigns 'customer' role; ignores any role in body)
+    // Self-service customer registration via Supabase Auth (always assigns 'customer' role; ignores any role in body)
     if (action === 'register') {
-      const existing = await persistentDB.getUserByEmail(email);
-      if (existing) {
-        return NextResponse.json(
-          { error: 'An account with this email already exists. Please sign in.' },
-          { status: 409 }
-        );
+      try {
+        const { user: created, token } = await registerCustomerWithSupabaseAuth({
+          email,
+          password,
+          fullName: fullName || email,
+          businessName: businessName || fullName || email,
+        });
+
+        const response = NextResponse.json({
+          success: true,
+          token,
+          user: {
+            id: created.id,
+            organizationId: created.organizationId,
+            email: created.email,
+            fullName: created.fullName,
+            role: created.role,
+          },
+        });
+        response.cookies.set(SESSION_COOKIE_NAME, token, {
+          httpOnly: true,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 86400,
+        });
+        return response;
+      } catch (regErr: any) {
+        const msg = regErr?.message || 'Registration failed.';
+        const status = msg.startsWith('Conflict') || msg.includes('already') ? 409 : 400;
+        return NextResponse.json({ error: msg }, { status });
       }
-
-      const created = await persistentDB.createOrGetCustomerUser({
-        email,
-        fullName: fullName || email,
-        businessName: businessName || fullName || email,
-        password,
-      });
-      const token = issueSessionToken(created);
-
-      const response = NextResponse.json({
-        success: true,
-        token,
-        user: {
-          id: created.id,
-          organizationId: created.organizationId,
-          email: created.email,
-          fullName: created.fullName,
-          role: created.role,
-        },
-      });
-      response.cookies.set(SESSION_COOKIE_NAME, token, {
-        httpOnly: true,
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 86400,
-      });
-      return response;
     }
 
     const authResult = await authenticateCredentials(email, password);
@@ -144,7 +142,14 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE() {
+  try {
+    const supabaseAuth = persistentDB.getSupabaseAuthClient();
+    await supabaseAuth.auth.signOut();
+  } catch {
+    // Ignore sign-out errors when clearing cookies
+  }
   const response = NextResponse.json({ success: true, message: 'Signed out.' });
   response.cookies.delete(SESSION_COOKIE_NAME);
+  response.cookies.delete(LEGACY_SESSION_COOKIE_NAME);
   return response;
 }

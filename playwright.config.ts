@@ -16,5 +16,9 @@ export default defineConfig({
     url: 'http://localhost:3456',
     reuseExistingServer: false,
     timeout: 60000,
+    env: {
+      SUPABASE_TEST_BRIDGE: 'true',
+      PORT: '3456',
+    },
   },
 });

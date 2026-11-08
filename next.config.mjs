@@ -2,6 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  serverExternalPackages: ['@electric-sql/pglite'],
   eslint: {
     ignoreDuringBuilds: false,
   },

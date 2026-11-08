@@ -30,7 +30,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { orderId, action, specialistId, specialistName } = body;
+    const {
+      orderId,
+      action,
+      specialistId,
+      specialistName,
+      deliverableTitle,
+      deliverablePath,
+      verificationNotes,
+      revisionNotes,
+    } = body;
 
     const order = await persistentDB.getOrder(orderId);
     if (!order) {
@@ -49,6 +58,22 @@ export async function POST(req: NextRequest) {
       updated = OrderService.submitForQA(order);
     } else if (action === 'deliver') {
       updated = OrderService.deliverOrder(order);
+      await persistentDB.saveDeliverable({
+        orderId: order.id,
+        uploadedBy: auth.user.id,
+        title: deliverableTitle || 'Setup Verification & Handover Evidence Pack',
+        storageBucketPath: deliverablePath || `orders/${order.id}/handover-pack.pdf`,
+        verificationNotes:
+          verificationNotes ||
+          'All owner-approved setup scope items verified and delegated via official Partner ID.',
+        qaChecklistPassed: true,
+      });
+    } else if (action === 'request_revision') {
+      await persistentDB.saveRevision({
+        orderId: order.id,
+        requestedBy: auth.user.id,
+        revisionNotes: revisionNotes || 'Revision requested on setup configuration.',
+      });
     } else if (action === 'accept') {
       updated = OrderService.acceptHandover(order);
     } else {

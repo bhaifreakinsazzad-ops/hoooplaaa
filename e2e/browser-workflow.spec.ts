@@ -95,7 +95,7 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
 
     // Extract Customer A session cookie from browser context
     const cookies = await page.context().cookies();
-    const sessionCookie = cookies.find((c) => c.name === 'hoooplaaa_session');
+    const sessionCookie = cookies.find((c) => c.name === 'sb-access-token' || c.name === 'hoooplaaa_session');
     expect(sessionCookie).toBeDefined();
     const customerHeaders = {
       Authorization: `Bearer ${sessionCookie!.value}`,
@@ -143,10 +143,12 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     await page.fill('#login-email', 'alice@dhakaheritage.bd');
     await page.fill('#login-password', 'CustomerA#2026!');
     await page.click('[data-testid="login-submit-btn"]');
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL((url) => url.pathname === '/dashboard');
 
     const customerACookies = await page.context().cookies();
-    const customerAToken = customerACookies.find((c) => c.name === 'hoooplaaa_session')!.value;
+    const customerAToken = customerACookies.find(
+      (c) => c.name === 'sb-access-token' || c.name === 'hoooplaaa_session'
+    )!.value;
     const customerAHeaders = { Authorization: `Bearer ${customerAToken}` };
 
     // Create authoritative server quote for Customer A
@@ -256,10 +258,12 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     await page.fill('#login-email', 'bob@chittagongtraders.bd');
     await page.fill('#login-password', 'CustomerB#2026!');
     await page.click('[data-testid="login-submit-btn"]');
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL((url) => url.pathname === '/dashboard');
 
     const customerBCookies = await page.context().cookies();
-    const customerBToken = customerBCookies.find((c) => c.name === 'hoooplaaa_session')!.value;
+    const customerBToken = customerBCookies.find(
+      (c) => c.name === 'sb-access-token' || c.name === 'hoooplaaa_session'
+    )!.value;
     const customerBHeaders = { Authorization: `Bearer ${customerBToken}` };
 
     // Customer B attempting to read Customer A's order -> 403 Forbidden
@@ -315,7 +319,9 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     });
 
     const financeCookies = await page.context().cookies();
-    const financeToken = financeCookies.find((c) => c.name === 'hoooplaaa_session')!.value;
+    const financeToken = financeCookies.find(
+      (c) => c.name === 'sb-access-token' || c.name === 'hoooplaaa_session'
+    )!.value;
     const financeHeaders = { Authorization: `Bearer ${financeToken}` };
 
     // Finance Officer approves payment; server derives verifiedByStaffId from session (ignoring spoofed body field)
@@ -379,7 +385,9 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     await page.waitForURL((url) => url.pathname === '/admin');
 
     const adminCookies = await page.context().cookies();
-    const adminToken = adminCookies.find((c) => c.name === 'hoooplaaa_session')!.value;
+    const adminToken = adminCookies.find(
+      (c) => c.name === 'sb-access-token' || c.name === 'hoooplaaa_session'
+    )!.value;
     const adminHeaders = { Authorization: `Bearer ${adminToken}` };
 
     const assignRes = await request.post('/api/admin/orders', {

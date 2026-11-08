@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { PGlite } from '@electric-sql/pglite';
 
-describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)', () => {
+describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)', () => {
   const migrationDir = path.resolve(process.cwd(), 'supabase/migrations');
   const migrationPath = path.join(
     migrationDir,
@@ -11,6 +11,7 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
   );
 
   let pg: PGlite;
+  let migrationSql: string;
 
   const ORG_ALPHA = '10000000-0000-4000-a000-000000000001';
   const ORG_BETA = '10000000-0000-4000-a000-000000000002';
@@ -27,10 +28,57 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
 
   beforeAll(async () => {
     pg = new PGlite();
-    const sql = fs.readFileSync(migrationPath, 'utf-8');
-    await pg.exec(sql);
+    migrationSql = fs.readFileSync(migrationPath, 'utf-8');
 
-    // Seed tenants and users in PostgreSQL 16
+    // In disposable PGlite, pre-create Supabase-managed `auth` and `storage` schemas and roles
+    // BEFORE running the production migration (since the production migration never overrides them).
+    await pg.exec(`
+      CREATE SCHEMA IF NOT EXISTS auth;
+      CREATE TABLE IF NOT EXISTS auth.users (
+        id UUID PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+      );
+      CREATE OR REPLACE FUNCTION auth.uid()
+      RETURNS UUID AS $$
+        SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
+      $$ LANGUAGE sql STABLE;
+
+      CREATE SCHEMA IF NOT EXISTS storage;
+      CREATE TABLE IF NOT EXISTS storage.buckets (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        public BOOLEAN NOT NULL DEFAULT false,
+        file_size_limit BIGINT,
+        allowed_mime_types TEXT[]
+      );
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+          CREATE ROLE service_role NOLOGIN BYPASSRLS;
+        END IF;
+      END $$;
+    `);
+
+    await pg.exec(migrationSql);
+
+    await pg.exec(`
+      GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+      GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA auth TO anon, authenticated, service_role;
+      GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+      GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated, service_role;
+      GRANT SELECT ON public.service_catalog TO anon;
+    `);
+
+    // Seed test tenants and users in disposable PostgreSQL 16
     await pg.exec(`
       INSERT INTO auth.users (id, email) VALUES
         ('${CUSTOMER_A}', 'alice@dhakaheritage.bd'),
@@ -61,15 +109,23 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
     `);
   });
 
-  it('1. Ensures a single conflict-free canonical SQL migration file exists and executes cleanly in PostgreSQL 16', async () => {
+  it('1. Ensures canonical SQL migration does NOT override Supabase auth.users, auth.uid(), or roles, and seeds 7 SKUs cleanly', async () => {
     const files = fs.readdirSync(migrationDir).filter((f) => f.endsWith('.sql'));
     expect(files).toEqual(['20261108000000_canonical_production_schema_v5.sql']);
+
+    expect(migrationSql).not.toMatch(/CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+auth/i);
+    expect(migrationSql).not.toMatch(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+auth\.users/i);
+    expect(migrationSql).not.toMatch(/CREATE\s+OR\s+REPLACE\s+FUNCTION\s+auth\.uid/i);
+    expect(migrationSql).not.toMatch(/CREATE\s+ROLE\s+(anon|authenticated|service_role)/i);
+    expect(migrationSql).not.toMatch(/password_hash/i);
 
     const catalogRes = await pg.query<{ sku: string; base_price_minor: number; delivery_target: string }>(
       'SELECT sku, base_price_minor, delivery_target FROM public.service_catalog ORDER BY sku'
     );
     expect(catalogRes.rows.length).toBe(7);
-    expect(catalogRes.rows.find((r) => r.sku === 'HI-BUNDLE-3')?.base_price_minor).toBe(300000);
+    expect(Number(catalogRes.rows.find((r) => r.sku === 'HI-BUNDLE-3')?.base_price_minor)).toBe(
+      300000
+    );
     expect(catalogRes.rows.find((r) => r.sku === 'HI-BUNDLE-3')?.delivery_target).toBe(
       '2–4 business days'
     );
@@ -82,17 +138,17 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
       SELECT set_config('request.jwt.claim.sub', '${CUSTOMER_A}', true);
 
       INSERT INTO public.orders (
-        id, order_code, organization_id, customer_id, quote_id,
+        id, order_code, order_number, organization_id, customer_id, quote_id,
         order_status, financial_status, intake_status, total_minor, quote_snapshot, payload_json
       ) VALUES (
-        '${ORDER_A}', 'ORD-A-001', '${ORG_ALPHA}', '${CUSTOMER_A}', '${QUOTE_A}',
+        '${ORDER_A}', 'ORD-A-001', 'HI-202611-1001', '${ORG_ALPHA}', '${CUSTOMER_A}', '${QUOTE_A}',
         'payment_under_review', 'pending_verification', 'not_started', 300000, '{}'::jsonb, '{}'::jsonb
       );
 
       INSERT INTO public.payments (
-        id, order_id, payment_method, payment_status, amount_minor, idempotency_key, manual_trx_reference
+        id, attempt_code, order_id, payment_method, payment_status, amount_minor, idempotency_key, manual_trx_reference
       ) VALUES (
-        '${PAYMENT_A}', '${ORDER_A}', 'manual_mfs', 'pending_verification', 300000, 'idemp_pg_1', 'BKASH998877'
+        '${PAYMENT_A}', 'pay_mfs_001', '${ORDER_A}', 'manual_mfs', 'pending_verification', 300000, 'idemp_pg_1', 'BKASH998877'
       );
 
       INSERT INTO public.order_intakes (
@@ -100,7 +156,7 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
         target_audience, partner_invite_status, payload_json
       ) VALUES (
         '${ORDER_A}', '${CUSTOMER_A}', 'Dhaka Heritage Roasters', 'alice@dhakaheritage.bd',
-        '+8801711223344', 'Specialty Coffee Buyers', 'completed', '{}'::jsonb
+        '+8801711223344', 'Specialty Coffee Buyers', 'invitation_sent', '{}'::jsonb
       );
       COMMIT;
     `);
@@ -129,9 +185,9 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V5)'
     await expect(
       pg.exec(`
         INSERT INTO public.order_files (
-          file_code, order_id, uploaded_by, file_name, file_size_bytes, mime_type, sha256_hash, storage_path
+          file_code, order_id, uploaded_by, file_name, file_size_bytes, mime_type, sha256_hash, storage_path, payload_json
         ) VALUES (
-          'file_hack', '${ORDER_A}', '${CUSTOMER_B}', 'malicious.png', 128, 'image/png', 'abc', 'orders/hack/malicious.png'
+          'file_hack', '${ORDER_A}', '${CUSTOMER_B}', 'malicious.png', 128, 'image/png', 'abc', 'orders/hack/malicious.png', '{}'::jsonb
         );
       `)
     ).rejects.toThrow(/row-level security policy/i);

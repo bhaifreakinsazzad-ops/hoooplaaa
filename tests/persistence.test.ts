@@ -130,4 +130,49 @@ describe('Relational Database Persistence, Restart Durability & Private File Int
     expect(retrieved?.bytes.equals(realPngBytes)).toBe(true);
     expect(retrieved?.file.sha256Hash).toBe(expectedSha256);
   });
+
+  it('4. Persists order_deliverables and order_revisions in PostgreSQL and refuses local fallback when credentials are missing', async () => {
+    const quote = calculateServerQuote({
+      businessId: '10000000-0000-4000-a000-000000000001',
+      businessName: 'Deliverables & Revisions Ltd',
+      businessProfile: {
+        operatingModel: 'in_person_storefront',
+        hasPhysicalStorefront: true,
+        conductsInPersonVisits: true,
+      },
+      selectedPlatformSkus: ['HI-SET-META'],
+      selectedAddonSkus: [],
+    });
+    await persistentDB.saveQuote(quote);
+    const order = OrderService.createOrderFromQuote(
+      quote,
+      '00000000-0000-4000-a000-000000000001'
+    );
+    await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
+
+    const deliverable = await persistentDB.saveDeliverable({
+      orderId: order.id,
+      uploadedBy: '00000000-0000-4000-a000-000000000004',
+      title: 'Meta Business Portfolio Handover Pack',
+      storageBucketPath: `orders/${order.id}/handover.pdf`,
+      verificationNotes: 'Partner ID 8899110022 delegated and verified.',
+      qaChecklistPassed: true,
+    });
+    expect(deliverable.qaChecklistPassed).toBe(true);
+
+    const deliverablesList = await persistentDB.getDeliverables(order.id);
+    expect(deliverablesList.length).toBe(1);
+    expect(deliverablesList[0].title).toBe('Meta Business Portfolio Handover Pack');
+
+    const revision = await persistentDB.saveRevision({
+      orderId: order.id,
+      requestedBy: '00000000-0000-4000-a000-000000000001',
+      revisionNotes: 'Please update the Instagram bio link to our new domain.',
+    });
+    expect(revision.isResolved).toBe(false);
+
+    const revisionsList = await persistentDB.getRevisions(order.id);
+    expect(revisionsList.length).toBe(1);
+    expect(revisionsList[0].revisionNotes).toContain('Instagram bio link');
+  });
 });

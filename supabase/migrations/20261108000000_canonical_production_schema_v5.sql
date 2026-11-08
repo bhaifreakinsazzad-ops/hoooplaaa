@@ -1,68 +1,39 @@
 -- ==============================================================================
--- HOOOPLAAA INCORPORATED — CANONICAL PRODUCTION SCHEMA & RLS MIGRATION (V5.0)
--- Target Project: aqmyqezuoscpgqwtvblu (https://aqmyqezuoscpgqwtvblu.supabase.co)
--- Engine Compatibility: Supabase PostgreSQL 15/16 & Disposable PostgreSQL 16 (PGlite)
+-- HOOOPLAAA INCORPORATED — CANONICAL PRODUCTION SCHEMA & RLS MIGRATION (V6.0)
+-- Target Supabase Project: aqmyqezuoscpgqwtvblu (https://aqmyqezuoscpgqwtvblu.supabase.co)
+-- Pure Supabase PostgreSQL DDL: Does NOT override Supabase-managed auth.users,
+-- auth.uid(), or managed database roles (anon, authenticated, service_role).
 -- ==============================================================================
-
--- 0. SUPABASE AUTH SCHEMA & ROLE BOOTSTRAP (Idempotent for standalone PG & Supabase)
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'auth') THEN
-        CREATE SCHEMA auth;
-    END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS auth.users (
-    id UUID PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
-);
-
-CREATE OR REPLACE FUNCTION auth.uid()
-RETURNS UUID AS $$
-    SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
-$$ LANGUAGE sql STABLE;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        CREATE ROLE anon NOLOGIN;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        CREATE ROLE authenticated NOLOGIN;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-        CREATE ROLE service_role NOLOGIN BYPASSRLS;
-    END IF;
-END $$;
-
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
-GRANT SELECT ON auth.users TO anon, authenticated, service_role;
 
 -- 1. CUSTOM ENUM TYPES
 DO $$ BEGIN
-    CREATE TYPE user_role_enum AS ENUM ('customer', 'finance', 'engineer', 'admin');
+    CREATE TYPE public.user_role_enum AS ENUM ('customer', 'finance', 'engineer', 'admin');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE order_status_enum AS ENUM (
+    CREATE TYPE public.order_status_enum AS ENUM (
+        'created',
         'draft_quote',
         'quote_issued',
         'awaiting_payment',
         'payment_under_review',
         'paid',
+        'awaiting_requirements',
         'intake_pending',
         'intake_submitted',
         'ready_for_fulfillment',
         'in_progress',
+        'qa_review',
         'in_qa',
         'delivered',
         'revision_requested',
+        'accepted',
         'completed',
+        'closed',
+        'blocked_waiting_customer',
+        'blocked_external_platform',
         'cancelled',
         'refunded'
     );
@@ -71,13 +42,15 @@ EXCEPTION
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE payment_method_enum AS ENUM (
+    CREATE TYPE public.payment_method_enum AS ENUM (
         'sslcommerz',
         'sslcommerz_sandbox',
         'sslcommerz_live',
         'manual_mfs',
+        'bkash_direct',
         'bkash_merchant_direct',
         'nagad_merchant_direct',
+        'bank_transfer',
         'manual_bank_wire'
     );
 EXCEPTION
@@ -85,14 +58,16 @@ EXCEPTION
 END $$;
 
 DO $$ BEGIN
-    CREATE TYPE payment_status_enum AS ENUM (
+    CREATE TYPE public.payment_status_enum AS ENUM (
         'unpaid',
         'initiated',
         'pending_verification',
         'verified',
         'paid',
         'failed',
-        'refunded'
+        'refund_pending',
+        'refunded',
+        'disputed'
     );
 EXCEPTION
     WHEN duplicate_object THEN null;
@@ -109,15 +84,14 @@ CREATE TABLE IF NOT EXISTS public.organizations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
--- 3. USER PROFILES (LINKED TO AUTH.USERS WITH SERVER-CONTROLLED ROLE)
+-- 3. USER PROFILES (LINKED TO SUPABASE MANAGED auth.users; NO PASSWORD HASHES STORED HERE)
 CREATE TABLE IF NOT EXISTS public.user_profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     organization_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE RESTRICT,
     email TEXT UNIQUE NOT NULL,
     full_name TEXT NOT NULL,
     phone_number TEXT,
-    role user_role_enum NOT NULL DEFAULT 'customer',
-    password_hash TEXT,
+    role public.user_role_enum NOT NULL DEFAULT 'customer',
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
@@ -189,13 +163,14 @@ CREATE TABLE IF NOT EXISTS public.quotes (
 CREATE TABLE IF NOT EXISTS public.orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_code TEXT UNIQUE NOT NULL,
+    order_number TEXT UNIQUE NOT NULL,
     organization_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE RESTRICT,
     customer_id UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE RESTRICT,
     quote_id UUID NOT NULL REFERENCES public.quotes(id) ON DELETE RESTRICT,
     assigned_engineer_id UUID REFERENCES public.user_profiles(id) ON DELETE SET NULL,
     assigned_specialist_name TEXT,
-    order_status order_status_enum NOT NULL DEFAULT 'awaiting_payment',
-    financial_status payment_status_enum NOT NULL DEFAULT 'unpaid',
+    order_status public.order_status_enum NOT NULL DEFAULT 'awaiting_payment',
+    financial_status public.payment_status_enum NOT NULL DEFAULT 'unpaid',
     intake_status TEXT NOT NULL DEFAULT 'not_started',
     total_minor BIGINT NOT NULL,
     currency VARCHAR(3) NOT NULL DEFAULT 'BDT',
@@ -212,9 +187,10 @@ CREATE TABLE IF NOT EXISTS public.orders (
 -- 7. PAYMENTS & SETTLEMENT ATTEMPTS
 CREATE TABLE IF NOT EXISTS public.payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    attempt_code TEXT UNIQUE NOT NULL,
     order_id UUID NOT NULL REFERENCES public.orders(id) ON DELETE RESTRICT,
-    payment_method payment_method_enum NOT NULL,
-    payment_status payment_status_enum NOT NULL DEFAULT 'initiated',
+    payment_method public.payment_method_enum NOT NULL,
+    payment_status public.payment_status_enum NOT NULL DEFAULT 'initiated',
     amount_minor BIGINT NOT NULL,
     currency VARCHAR(3) NOT NULL DEFAULT 'BDT',
     idempotency_key TEXT UNIQUE NOT NULL,
@@ -262,7 +238,7 @@ CREATE TABLE IF NOT EXISTS public.order_intakes (
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
--- 10. PRIVATE FILE STORAGE RECORDS (VERIFIED BYTES & SHA-256 INTEGRITY)
+-- 10. PRIVATE FILE STORAGE METADATA (BACKED BY SUPABASE STORAGE BUCKET 'order-assets')
 CREATE TABLE IF NOT EXISTS public.order_files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     file_code TEXT UNIQUE NOT NULL,
@@ -275,23 +251,27 @@ CREATE TABLE IF NOT EXISTS public.order_files (
     storage_bucket TEXT NOT NULL DEFAULT 'order-assets',
     storage_path TEXT UNIQUE NOT NULL,
     is_private BOOLEAN NOT NULL DEFAULT true,
+    payload_json JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
 -- 11. DELIVERABLES & REVISIONS
 CREATE TABLE IF NOT EXISTS public.order_deliverables (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deliverable_code TEXT UNIQUE NOT NULL,
     order_id UUID NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
     uploaded_by UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE RESTRICT,
     title TEXT NOT NULL,
     storage_bucket_path TEXT NOT NULL,
     verification_notes TEXT NOT NULL,
     qa_checklist_passed BOOLEAN NOT NULL DEFAULT false,
+    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
 CREATE TABLE IF NOT EXISTS public.order_revisions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    revision_code TEXT UNIQUE NOT NULL,
     order_id UUID NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
     requested_by UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE RESTRICT,
     revision_notes TEXT NOT NULL,
@@ -309,7 +289,7 @@ CREATE TABLE IF NOT EXISTS public.audit_requests (
     business_name TEXT NOT NULL,
     website_or_page_url TEXT NOT NULL,
     contact_email TEXT NOT NULL,
-    contact_phone TEXT NOT NULL,
+    contact_phone TEXT NOT NULL DEFAULT '',
     primary_goal TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'submitted',
     payload_json JSONB NOT NULL,
@@ -319,6 +299,7 @@ CREATE TABLE IF NOT EXISTS public.audit_requests (
 -- 13. IMMUTABLE AUDIT LOGS
 CREATE TABLE IF NOT EXISTS public.audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    log_code TEXT UNIQUE NOT NULL,
     actor_id UUID REFERENCES public.user_profiles(id) ON DELETE SET NULL,
     actor_role TEXT NOT NULL,
     action TEXT NOT NULL,
@@ -328,14 +309,25 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
--- GRANT TABLE PERMISSIONS TO ROLES (Enforced via RLS below)
-GRANT SELECT ON public.service_catalog TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated, service_role;
+-- 14. SUPABASE STORAGE PRIVATE BUCKET PROVISIONING (WHEN storage SCHEMA IS PRESENT)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'storage') THEN
+        INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+        VALUES (
+            'order-assets',
+            'order-assets',
+            false,
+            26214400,
+            ARRAY['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'application/pdf', 'application/zip', 'application/x-zip-compressed']
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            public = false,
+            file_size_limit = 26214400;
+    END IF;
+END $$;
 
--- ==============================================================================
--- 14. ROW LEVEL SECURITY (RLS) POLICIES — STRICT MULTI-TENANT & RBAC ENFORCEMENT
--- ==============================================================================
-
+-- 15. ROW LEVEL SECURITY (RLS) POLICIES — STRICT MULTI-TENANT & RBAC ENFORCEMENT
 ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.organizations FORCE ROW LEVEL SECURITY;
 
@@ -375,16 +367,16 @@ ALTER TABLE public.audit_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs FORCE ROW LEVEL SECURITY;
 
--- Security Definer Helper Functions (Bypass RLS to read caller's authoritative role & org)
+-- Security Definer Helper Functions (Read caller's authoritative role & org from user_profiles)
 CREATE OR REPLACE FUNCTION public.get_auth_role()
-RETURNS user_role_enum AS $$
+RETURNS public.user_role_enum AS $$
     SELECT role FROM public.user_profiles WHERE id = auth.uid();
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
 
 CREATE OR REPLACE FUNCTION public.get_auth_org_id()
 RETURNS UUID AS $$
     SELECT organization_id FROM public.user_profiles WHERE id = auth.uid();
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
 
 -- Service Catalog: Public read-only for active items; Admin full control
 CREATE POLICY catalog_public_select ON public.service_catalog

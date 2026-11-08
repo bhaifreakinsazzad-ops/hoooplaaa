@@ -1,90 +1,111 @@
 import { NextRequest } from 'next/server';
-import crypto from 'crypto';
-import { persistentDB, DbUserProfile, hashPassword } from './persistent-db';
+import { persistentDB, DbUserProfile } from './persistent-db';
 import { Order } from './types';
 
-const SESSION_SECRET =
-  process.env.INTERNAL_AUDIT_SALT || 'hoooplaaa-v5-authoritative-session-hmac-secret-2026';
+export const SESSION_COOKIE_NAME = 'sb-access-token';
+export const LEGACY_SESSION_COOKIE_NAME = 'hoooplaaa_session';
 
-export const SESSION_COOKIE_NAME = 'hoooplaaa_session';
-
-export interface SessionTokenPayload {
-  sub: string; // UUID of user_profiles.id
-  email: string;
-  iat: number;
-  exp: number;
-}
-
-export function issueSessionToken(user: DbUserProfile, ttlSeconds = 86400): string {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const payload: SessionTokenPayload = {
-    sub: user.id,
-    email: user.email,
-    iat: nowSec,
-    exp: nowSec + ttlSeconds,
-  };
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(encodedPayload)
-    .digest('base64url');
-  return `${encodedPayload}.${signature}`;
-}
-
-export function verifySessionTokenSignature(token: string): SessionTokenPayload | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 2) return null;
-    const [encodedPayload, signature] = parts;
-    const expectedSig = crypto
-      .createHmac('sha256', SESSION_SECRET)
-      .update(encodedPayload)
-      .digest('base64url');
-
-    const sigBuf = Buffer.from(signature);
-    const expBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      return null;
-    }
-
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, 'base64url').toString('utf8')
-    ) as SessionTokenPayload;
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (!payload.sub || !payload.exp || payload.exp < nowSec) {
-      return null;
-    }
-
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * Authenticates a user strictly via Supabase Auth (`supabase.auth.signInWithPassword`).
+ * No custom password hashing, no hardcoded secrets, and no local token signing.
+ */
 export async function authenticateCredentials(
   email: string,
   password: string
 ): Promise<{ user: DbUserProfile; token: string } | null> {
-  const user = await persistentDB.getUserByEmail(email);
-  if (!user) return null;
+  const supabaseAuth = persistentDB.getSupabaseAuthClient();
+  const normalizedEmail = email.trim().toLowerCase();
 
-  const expectedHash = hashPassword(password);
-  if (user.passwordHash !== expectedHash) {
+  const { data, error } = await supabaseAuth.auth.signInWithPassword({
+    email: normalizedEmail,
+    password,
+  });
+
+  if (error || !data?.user || !data?.session?.access_token) {
     return null;
   }
 
-  const token = issueSessionToken(user);
+  let dbUser =
+    (await persistentDB.getUserById(data.user.id)) ||
+    (await persistentDB.getUserByEmail(normalizedEmail));
+
+  if (!dbUser) {
+    // Provision default customer profile if user authenticated in Supabase Auth but profile row is not yet created
+    dbUser = await persistentDB.createOrGetCustomerUser({
+      id: data.user.id,
+      email: normalizedEmail,
+      fullName: (data.user.user_metadata?.full_name as string) || normalizedEmail,
+      businessName: (data.user.user_metadata?.business_name as string) || normalizedEmail,
+    });
+  }
+
   await persistentDB.recordAuditLog({
-    actorId: user.id,
-    actorRole: user.role,
+    actorId: dbUser.id,
+    actorRole: dbUser.role,
     action: 'AUTH_LOGIN_SUCCESS',
     entityType: 'user',
-    entityId: user.id,
-    metadata: { email: user.email },
+    entityId: dbUser.id,
+    metadata: { email: dbUser.email },
   });
 
-  return { user, token };
+  return {
+    user: dbUser,
+    token: data.session.access_token,
+  };
+}
+
+/**
+ * Registers a new customer account via Supabase Auth (`supabase.auth.signUp`).
+ * Always assigns `role = 'customer'` in `public.user_profiles` regardless of request payload.
+ */
+export async function registerCustomerWithSupabaseAuth(params: {
+  email: string;
+  password: string;
+  fullName?: string;
+  businessName?: string;
+}): Promise<{ user: DbUserProfile; token: string }> {
+  const normalizedEmail = params.email.trim().toLowerCase();
+  const existing = await persistentDB.getUserByEmail(normalizedEmail);
+  if (existing) {
+    throw new Error('Conflict: An account with this email already exists.');
+  }
+
+  const supabaseAuth = persistentDB.getSupabaseAuthClient();
+  const { data, error } = await supabaseAuth.auth.signUp({
+    email: normalizedEmail,
+    password: params.password,
+    options: {
+      data: {
+        full_name: params.fullName || normalizedEmail,
+        business_name: params.businessName || params.fullName || normalizedEmail,
+      },
+    },
+  });
+
+  if (error || !data?.user) {
+    throw new Error(error?.message || 'Supabase Auth sign-up failed.');
+  }
+
+  const createdProfile = await persistentDB.createOrGetCustomerUser({
+    id: data.user.id,
+    email: normalizedEmail,
+    fullName: params.fullName || normalizedEmail,
+    businessName: params.businessName || params.fullName || normalizedEmail,
+  });
+
+  let accessToken = data.session?.access_token || '';
+  if (!accessToken) {
+    const signInRes = await supabaseAuth.auth.signInWithPassword({
+      email: normalizedEmail,
+      password: params.password,
+    });
+    accessToken = signInRes.data?.session?.access_token || '';
+  }
+
+  return {
+    user: createdProfile,
+    token: accessToken,
+  };
 }
 
 export function extractBearerOrCookieToken(req: NextRequest): string | null {
@@ -94,18 +115,18 @@ export function extractBearerOrCookieToken(req: NextRequest): string | null {
     if (token) return token;
   }
 
-  const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-  if (sessionCookie) return sessionCookie;
-
-  const sbCookie = req.cookies.get('sb-access-token')?.value;
+  const sbCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (sbCookie) return sbCookie;
+
+  const legacyCookie = req.cookies.get(LEGACY_SESSION_COOKIE_NAME)?.value;
+  if (legacyCookie) return legacyCookie;
 
   return null;
 }
 
 /**
- * Verifies the incoming session token or Supabase JWT and resolves the authoritative
- * user profile and role directly from the database (never trusting client claims for role/org).
+ * Verifies the incoming Supabase Auth JWT via `supabase.auth.getUser(token)`
+ * and resolves the authoritative user profile and role directly from PostgreSQL `public.user_profiles`.
  */
 export async function authenticateRequest(
   req: NextRequest
@@ -118,43 +139,34 @@ export async function authenticateRequest(
     return {
       authenticated: false,
       status: 401,
-      error: 'Unauthorized: Missing authentication session token.',
+      error: 'Unauthorized: Missing Supabase authentication token.',
     };
   }
 
-  // 1. Verify HMAC-signed server session token
-  const verifiedPayload = verifySessionTokenSignature(token);
-  if (verifiedPayload) {
-    const dbUser = await persistentDB.getUserById(verifiedPayload.sub);
-    if (!dbUser) {
-      return {
-        authenticated: false,
-        status: 401,
-        error: 'Unauthorized: Session user profile no longer exists.',
-      };
-    }
-    return { authenticated: true, user: dbUser };
+  const supabase = persistentDB.getSupabaseAuthClient();
+  const { data, error } = await supabase.auth.getUser(token);
+
+  if (error || !data?.user) {
+    return {
+      authenticated: false,
+      status: 401,
+      error: 'Unauthorized: Invalid or expired Supabase authentication token.',
+    };
   }
 
-  // 2. Verify live Supabase Auth JWT if Supabase client is connected
-  const supabase = persistentDB.getSupabaseClient();
-  if (supabase) {
-    const { data, error } = await supabase.auth.getUser(token);
-    if (!error && data?.user) {
-      const dbUser =
-        (await persistentDB.getUserById(data.user.id)) ||
-        (data.user.email ? await persistentDB.getUserByEmail(data.user.email) : null);
-      if (dbUser) {
-        return { authenticated: true, user: dbUser };
-      }
-    }
+  const dbUser =
+    (await persistentDB.getUserById(data.user.id)) ||
+    (data.user.email ? await persistentDB.getUserByEmail(data.user.email) : null);
+
+  if (!dbUser) {
+    return {
+      authenticated: false,
+      status: 401,
+      error: 'Unauthorized: Authenticated user profile does not exist in PostgreSQL.',
+    };
   }
 
-  return {
-    authenticated: false,
-    status: 401,
-    error: 'Unauthorized: Invalid or expired authentication token.',
-  };
+  return { authenticated: true, user: dbUser };
 }
 
 export async function requireRole(
