@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+const isWin = process.platform === 'win32';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 60000,
@@ -7,12 +9,12 @@ export default defineConfig({
   workers: 1,
   use: {
     baseURL: 'http://localhost:3456',
-    channel: 'msedge',
+    channel: process.env.CI ? undefined : isWin ? 'msedge' : undefined,
     headless: true,
     viewport: { width: 1440, height: 900 },
   },
   webServer: {
-    command: 'npx.cmd next start -p 3456',
+    command: isWin ? 'npx.cmd next start -p 3456' : 'npx next start -p 3456',
     url: 'http://localhost:3456',
     reuseExistingServer: false,
     timeout: 60000,

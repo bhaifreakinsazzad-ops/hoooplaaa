@@ -1,5 +1,21 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+
+if (typeof (globalThis as any).WebSocket === 'undefined') {
+  // @ts-ignore
+  (globalThis as any).WebSocket = class DummyWebSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+    readyState = 3;
+    constructor() {}
+    close() {}
+    send() {}
+    addEventListener() {}
+    removeEventListener() {}
+  };
+}
 import {
   QuoteSnapshot,
   Order,
