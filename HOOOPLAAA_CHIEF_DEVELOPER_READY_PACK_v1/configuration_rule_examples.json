@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.0 draft",
+  "explanation": "Reference business logic. Agent must implement validated schema and server decision engine; never execute this JSON as untrusted code.",
+  "currency": "BDT",
+  "unit": "taka_display_minor_poisha_storage",
+  "product_version": "2026-11-08-user-confirmed-working",
+  "default_checkout_enabled": false,
+  "default_external_costs_excluded": [
+    "ad_spend",
+    "provider_api_usage",
+    "subscription_fees",
+    "verification_outcome"
+  ],
+  "rules": [
+    {
+      "sku": "HI-SET-META",
+      "base_price_taka": 1500,
+      "billing_period": "one_time",
+      "requires": [
+        "business_name",
+        "facebook_page_state",
+        "meta_portfolio_state",
+        "authorized_owner",
+        "policy_restriction_state"
+      ],
+      "conditional": [
+        {
+          "if": {
+            "policy_restriction_state": [
+              "restricted",
+              "ownership_dispute"
+            ]
+          },
+          "outcome": "requires_manual_scope",
+          "message": "Account restrictions and ownership disputes are excluded from fixed setup."
+        }
+      ]
+    },
+    {
+      "sku": "HI-SET-GOOGLE",
+      "base_price_taka": 1500,
+      "billing_period": "one_time",
+      "requires": [
+        "business_type",
+        "customer_contact_mode",
+        "eligible_storefront_or_service_area",
+        "existing_profile_state"
+      ],
+      "conditional": [
+        {
+          "if": {
+            "eligible_storefront_or_service_area": false
+          },
+          "outcome": "ineligible_for_standard_offer",
+          "message": "Pure online-only/lead-generation companies are not eligible for standard Google Business Profile setup."
+        },
+        {
+          "if": {
+            "existing_profile_state": "unresolved_ownership_dispute"
+          },
+          "outcome": "requires_manual_scope",
+          "message": "Do not create duplicate profile or promise ownership resolution."
+        }
+      ]
+    },
+    {
+      "sku": "HI-SET-LINKEDIN",
+      "base_price_taka": 1500,
+      "billing_period": "one_time",
+      "requires": [
+        "company_name",
+        "admin_account_available",
+        "business_identity_assets"
+      ]
+    },
+    {
+      "sku": "HI-BUNDLE-3",
+      "base_price_taka": 3000,
+      "billing_period": "one_time",
+      "contains": [
+        "HI-SET-META",
+        "HI-SET-GOOGLE",
+        "HI-SET-LINKEDIN"
+      ],
+      "requires": [
+        "all_component_prerequisites"
+      ],
+      "conditional": [
+        {
+          "if": {
+            "google_eligible": false
+          },
+          "outcome": "requires_approved_rescope_before_payment",
+          "message": "Do not promise full 3-platform setup if Google is ineligible."
+        }
+      ]
+    },
+    {
+      "sku": "HI-ADD-WA",
+      "base_price_taka": 1690,
+      "billing_period": "one_time",
+      "requires": [
+        "whatsapp_account",
+        "one_named_workflow",
+        "provider_compatibility",
+        "opt_in_policy"
+      ],
+      "conditional": [
+        {
+          "if": {
+            "provider_compatibility": false
+          },
+          "outcome": "needs_prerequisite_or_manual_scope"
+        }
+      ]
+    },
+    {
+      "sku": "HI-ADD-PIXEL",
+      "base_price_taka": 1500,
+      "billing_period": "one_time",
+      "requires": [
+        "website_or_compatible_property",
+        "owner_authorized_access",
+        "consent_review",
+        "event_selection"
+      ],
+      "conditional": [
+        {
+          "if": {
+            "website_or_compatible_property": false
+          },
+          "outcome": "needs_prerequisite_or_manual_scope"
+        }
+      ]
+    },
+    {
+      "sku": "HI-ADD-CREATIVE",
+      "base_price_taka": 990,
+      "billing_period": "one_time",
+      "included_allowance": {
+        "original_assets": 1,
+        "revisions": 1,
+        "format": "static"
+      },
+      "requires": [
+        "brand_brief",
+        "approved_content_and_rights"
+      ]
+    }
+  ],
+  "audit": {
+    "pre_sale": {
+      "fee_taka": 0,
+      "deliverable": "initial_review",
+      "qualified_only": true
+    },
+    "post_sale": {
+      "fee_taka": 0,
+      "deliverable": "detailed_report",
+      "trigger": "eligible_paid_order",
+      "must_be_human_approved": true
+    },
+    "marketing_value_label_usd": 20,
+    "valuation_proof_required_for_comparison_claim": true
+  },
+  "quote_examples": [
+    {
+      "selection": [
+        "HI-SET-META"
+      ],
+      "subtotal_taka": 1500
+    },
+    {
+      "selection": [
+        "HI-BUNDLE-3"
+      ],
+      "subtotal_taka": 3000
+    },
+    {
+      "selection": [
+        "HI-SET-META",
+        "HI-ADD-CREATIVE"
+      ],
+      "subtotal_taka": 2490,
+      "requires_compatibility": true
+    }
+  ],
+  "prohibited_public_checkout": [
+    "HI-PAY-SETTLEMENT",
+    "HI-CARD-VIRTUAL"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "overall_status": "blueprint_ready_implementation_not_started",
+  "milestones": [
+    {
+      "id": "foundation",
+      "name": "Repository, CI, environment and verified internal catalog",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "design",
+      "name": "3 visual directions; approved responsive design system",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "configurator",
+      "name": "Dynamic conditional multi-step forms with validated server quote",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "portal",
+      "name": "Auth/business isolation, orders, secure intake, timeline",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "admin",
+      "name": "Catalog governance, finance, staff assignments, QA, audit logs",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "payments",
+      "name": "Provider sandbox, verified callbacks/webhooks, manual reconciliation fallback",
+      "status": "not_started",
+      "evidence_required": true
+    },
+    {
+      "id": "launch",
+      "name": "Policies, security tests, accessibility, review, deployment approval",
+      "status": "not_started",
+      "evidence_required": true
+    }
+  ]
+}
