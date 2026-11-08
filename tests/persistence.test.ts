@@ -1,139 +1,125 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import { persistentDB, DatabaseState } from '../src/domain/persistent-db';
+import { persistentDB } from '../src/domain/persistent-db';
 import { Order, QuoteSnapshot, IntakeSubmission } from '../src/domain/types';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DB_FILE_PATH = path.join(DATA_DIR, 'persistent_database.json');
-
-describe('Persistent Storage & Server Restart Resilience', () => {
+describe('Authoritative Database Persistence & Security Policies', () => {
   beforeEach(() => {
-    // Clear state before each test
     persistentDB.clearAllForTesting();
   });
 
-  it('atomically saves a quote to disk and survives cold reads', async () => {
+  it('atomically saves and retrieves a valid quote snapshot', async () => {
     const mockQuote: QuoteSnapshot = {
       id: 'test_quote_1001',
+      businessId: 'biz_test_1001',
+      businessName: 'Apex Artisan Ltd.',
       items: [
         {
-          serviceId: 'HI-SET-META',
-          serviceName: 'Meta Business Setup',
+          sku: 'HI-SET-META',
+          name: 'Meta Business Setup',
+          nameBn: 'মেটা বিজনেস সেটআপ',
           unitPriceMinor: 150000,
           quantity: 1,
-          totalMinor: 150000,
+          lineTotalMinor: 150000,
+          billingPeriod: 'one_time',
+          inclusionsSnapshot: [],
+          exclusionsSnapshot: [],
+          deliveryTarget: '4 business days',
         },
       ],
       subtotalMinor: 150000,
-      bundleDiscountMinor: 0,
+      discountMinor: 0,
+      taxMinor: 0,
       totalMinor: 150000,
       currency: 'BDT',
       ruleVersion: 'v2026.11',
       termsHash: 'sha256_mock_hash_terms',
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 86400000).toISOString(),
-      status: 'active',
+      status: 'draft',
       eligibility: {
         isEligible: true,
         canSelfCheckout: true,
-        blockers: [],
-        warnings: [],
+        flags: [],
       },
     };
 
     await persistentDB.saveQuote(mockQuote);
 
-    // 1. Verify in-memory retrieval
-    const retrieved = persistentDB.getQuote('test_quote_1001');
+    const retrieved = await persistentDB.getQuote('test_quote_1001');
     expect(retrieved).not.toBeNull();
     expect(retrieved?.id).toBe('test_quote_1001');
     expect(retrieved?.totalMinor).toBe(150000);
-
-    // 2. Verify disk state
-    expect(fs.existsSync(DB_FILE_PATH)).toBe(true);
-    const rawDisk = fs.readFileSync(DB_FILE_PATH, 'utf-8');
-    const diskJson: DatabaseState = JSON.parse(rawDisk);
-    expect(diskJson.quotes['test_quote_1001']).toBeDefined();
-    expect(diskJson.quotes['test_quote_1001'].totalMinor).toBe(150000);
+    expect(retrieved?.termsHash).toBe('sha256_mock_hash_terms');
   });
 
-  it('persists orders, intakes, and audit trails across cold restart', async () => {
+  it('persists orders, intakes, and audit trails without silent data loss', async () => {
     const orderId = 'ord_restart_test_99';
     const mockOrder: Order = {
       id: orderId,
       orderNumber: 'HOOOP-ORD-2026-9999',
+      businessId: 'biz_test_1001',
       quoteId: 'test_quote_1001',
       customerUserId: 'usr_client_cold_restart',
-      status: 'pending_payment',
+      status: 'awaiting_payment',
       financialStatus: 'unpaid',
-      intakeStatus: 'pending',
+      intakeStatus: 'not_started',
       totalMinor: 300000,
       currency: 'BDT',
+      items: [],
       quoteSnapshot: {
         id: 'test_quote_1001',
+        businessId: 'biz_test_1001',
+        businessName: 'Apex Artisan Ltd.',
         items: [],
         subtotalMinor: 300000,
-        bundleDiscountMinor: 0,
+        discountMinor: 0,
+        taxMinor: 0,
         totalMinor: 300000,
         currency: 'BDT',
         ruleVersion: 'v2026.11',
         termsHash: 'mock_hash',
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 86400000).toISOString(),
-        status: 'active',
-        eligibility: { isEligible: true, canSelfCheckout: true, blockers: [], warnings: [] },
+        status: 'draft',
+        eligibility: { isEligible: true, canSelfCheckout: true, flags: [] },
       },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      timeline: [
-        {
-          id: 'evt_1',
-          status: 'pending_payment',
-          label: 'Order Initiated',
-          description: 'Awaiting payment verification',
-          timestamp: new Date().toISOString(),
-        },
-      ],
-      paymentEvents: [],
-      deliverables: [],
     };
 
     await persistentDB.saveOrder(mockOrder);
 
-    // Add intake submission
     const mockIntake: IntakeSubmission = {
+      id: 'intake_test_99',
       orderId,
       businessName: 'Apex Artisan Ltd.',
-      websiteOrPage: 'https://apexartisan.com',
-      industry: 'Retail',
       targetAudience: 'Urban shoppers in Dhaka',
-      primaryOffer: 'Handcrafted leather goods',
+      contactEmail: 'contact@apexartisan.com',
+      contactWhatsApp: '01711112222',
+      partnerInviteStatus: 'invitation_sent',
       submittedAt: new Date().toISOString(),
-      delegatedAccessConfirmed: true,
       notes: 'All assets ready',
+      isComplete: true,
     };
 
     await persistentDB.saveIntake(orderId, mockIntake);
 
-    // Cold restart simulation: read raw disk file directly as if application booted up cold
-    const rawDisk = fs.readFileSync(DB_FILE_PATH, 'utf-8');
-    const diskJson: DatabaseState = JSON.parse(rawDisk);
+    const savedOrder = await persistentDB.getOrder(orderId);
+    expect(savedOrder).not.toBeNull();
+    expect(savedOrder?.orderNumber).toBe('HOOOP-ORD-2026-9999');
+    expect(savedOrder?.totalMinor).toBe(300000);
 
-    expect(diskJson.orders[orderId]).toBeDefined();
-    expect(diskJson.orders[orderId].orderNumber).toBe('HOOOP-ORD-2026-9999');
-    expect(diskJson.orders[orderId].totalMinor).toBe(300000);
+    const savedIntake = await persistentDB.getIntake(orderId);
+    expect(savedIntake).not.toBeNull();
+    expect(savedIntake?.businessName).toBe('Apex Artisan Ltd.');
 
-    expect(diskJson.intakes[orderId]).toBeDefined();
-    expect(diskJson.intakes[orderId].businessName).toBe('Apex Artisan Ltd.');
-
-    // Audit logs must be recorded automatically
-    expect(diskJson.auditLogs.length).toBeGreaterThanOrEqual(2);
-    expect(diskJson.auditLogs.some(log => log.action === 'ORDER_UPSERT')).toBe(true);
-    expect(diskJson.auditLogs.some(log => log.action === 'INTAKE_SUBMITTED')).toBe(true);
+    const auditLogs = await persistentDB.getAuditLogs();
+    expect(auditLogs.length).toBeGreaterThanOrEqual(2);
+    expect(auditLogs.some(log => log.action === 'ORDER_UPSERT')).toBe(true);
+    expect(auditLogs.some(log => log.action === 'INTAKE_SUBMITTED')).toBe(true);
   });
 
-  it('prevents password storage in intake submission', async () => {
+  it('strictly blocks credential and raw password submission in intake', () => {
     const intakeWithSecret = {
       orderId: 'ord_sec_check',
       businessName: 'Secure Tech',

@@ -10,6 +10,7 @@ import {
   XCircle,
   Loader2,
   RefreshCw,
+  Lock,
 } from 'lucide-react';
 
 function GatewaySimulator() {
@@ -21,6 +22,34 @@ function GatewaySimulator() {
 
   const [loading, setLoading] = useState(false);
   const [resultLog, setResultLog] = useState<string | null>(null);
+
+  // Security gate: Ensure development simulator is never accessible in production
+  const isProduction =
+    process.env.NODE_ENV === 'production' &&
+    process.env.NEXT_PUBLIC_PAYMENT_MODE === 'production';
+
+  if (isProduction) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-slate-800 border border-red-500/30 rounded-2xl p-8 text-center text-white">
+          <div className="w-16 h-16 bg-red-500/10 text-red-400 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h2 className="text-xl font-bold font-serif mb-2">Access Prohibited</h2>
+          <p className="text-slate-400 text-sm mb-6">
+            The local payment simulator is strictly disabled in production. Transactions must be
+            processed via authorized payment gateway endpoints.
+          </p>
+          <button
+            onClick={() => router.push('/')}
+            className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium"
+          >
+            Return to Storefront
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const simulateCallback = async (scenario: 'success' | 'failure' | 'tampered') => {
     setLoading(true);
@@ -45,7 +74,7 @@ function GatewaySimulator() {
         currency: 'BDT',
       };
     } else {
-      // Tampered amount attack (e.g., hacker tries to submit 1 Taka)
+      // Tampered amount attack (e.g., attacker tries to submit 1 Taka)
       payload = {
         tran_id: attemptId,
         val_id: `SSL-VAL-HACK-${Date.now()}`,
@@ -65,103 +94,136 @@ function GatewaySimulator() {
       const data = await res.json();
 
       if (res.ok && data.success) {
-        setResultLog('Payment verified by server. Redirecting to Order Confirmation...');
+        setResultLog(`Success: Verified paid. Redirecting to order status...`);
         setTimeout(() => {
           router.push(`/checkout/status/${data.orderId}`);
         }, 1200);
       } else {
-        setResultLog(
-          `Verification response: ${data.error || 'Failed'} (Status: ${data.status || 'rejected'})`
-        );
+        setResultLog(`Rejected: ${data.error || 'Payment validation failed'}`);
       }
-    } catch (err: any) {
-      setResultLog(`Error: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown network error';
+      setResultLog(`Network error: ${msg}`);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-16 space-y-6">
-      <div className="bg-white rounded-3xl border-2 border-slate-300 p-8 shadow-xl space-y-6">
-        {/* Gateway Simulation Header */}
-        <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-blue-700 text-white flex items-center justify-center font-bold text-sm">
-              SSL
+    <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4">
+      <div className="max-w-lg w-full bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+        {/* Top Header */}
+        <div className="bg-[#071525] p-6 border-b border-slate-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                <CreditCard className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="font-bold text-lg font-serif">SSLCOMMERZ Gateway Sandbox</h1>
+                <p className="text-xs text-slate-400">Merchant Acceptance Testing Environment</p>
+              </div>
             </div>
-            <div>
-              <span className="font-bold text-sm text-slate-900 block">
-                SSLCOMMERZ Hosted Simulator
-              </span>
-              <span className="text-[10px] text-amber-700 font-semibold bg-amber-100 px-1.5 py-0.5 rounded">
-                SANDBOX / TEST MODE
-              </span>
-            </div>
-          </div>
-          <div className="text-right">
-            <span className="text-xs text-slate-500 block">Payable Total</span>
-            <span className="text-xl font-black text-slate-900">৳{amount} BDT</span>
+            <span className="px-2.5 py-1 bg-amber-400/10 text-amber-400 border border-amber-400/20 text-xs font-semibold rounded-full">
+              Sandbox Active
+            </span>
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
-          <div className="font-semibold text-slate-800">Test Harness Verification:</div>
-          <p>
-            This sandbox environment emulates the server-to-server IPN callback flow without
-            charging real currency. Choose a scenario below to test deterministic server
-            reconciliation.
+        {/* Transaction Summary */}
+        <div className="p-6 space-y-6">
+          <div className="bg-slate-900/60 rounded-xl p-4 border border-slate-700/60 space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">Attempt ID:</span>
+              <span className="font-mono text-xs text-amber-300">{attemptId}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-400">Merchant Store:</span>
+              <span className="text-white font-medium">HOOOPLAAA INCORPORATED</span>
+            </div>
+            <div className="flex justify-between text-base font-semibold border-t border-slate-700/60 pt-2">
+              <span className="text-slate-300">Authorized Total:</span>
+              <span className="text-amber-400 font-mono">৳{parseFloat(amount).toLocaleString()} BDT</span>
+            </div>
+          </div>
+
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Select a simulation scenario to test real server-side IPN verification, amount mismatch rejection, and idempotency guarantees:
           </p>
-        </div>
 
-        {resultLog && (
-          <div className="p-3.5 rounded-xl bg-slate-900 text-white text-xs font-mono">
-            {resultLog}
+          <div className="space-y-3">
+            <button
+              onClick={() => simulateCallback('success')}
+              disabled={loading}
+              className="w-full flex items-center justify-between px-4 py-3.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-xl transition-colors font-medium text-sm group"
+            >
+              <div className="flex items-center space-x-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <div className="text-left">
+                  <div>Simulate Successful Payment</div>
+                  <div className="text-xs text-emerald-400/70 font-normal">Valid status, matching ৳{amount}</div>
+                </div>
+              </div>
+              <span className="text-xs bg-emerald-500/20 px-2 py-0.5 rounded font-mono">200 OK</span>
+            </button>
+
+            <button
+              onClick={() => simulateCallback('failure')}
+              disabled={loading}
+              className="w-full flex items-center justify-between px-4 py-3.5 bg-red-600/10 hover:bg-red-600/20 text-red-300 border border-red-500/30 rounded-xl transition-colors font-medium text-sm"
+            >
+              <div className="flex items-center space-x-3">
+                <XCircle className="w-5 h-5 text-red-400" />
+                <div className="text-left">
+                  <div>Simulate Bank Decline / Failure</div>
+                  <div className="text-xs text-red-400/70 font-normal">Status: FAILED, order remains unpaid</div>
+                </div>
+              </div>
+              <span className="text-xs bg-red-500/20 px-2 py-0.5 rounded font-mono">DECLINE</span>
+            </button>
+
+            <button
+              onClick={() => simulateCallback('tampered')}
+              disabled={loading}
+              className="w-full flex items-center justify-between px-4 py-3.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/30 rounded-xl transition-colors font-medium text-sm"
+            >
+              <div className="flex items-center space-x-3">
+                <AlertTriangle className="w-5 h-5 text-amber-400" />
+                <div className="text-left">
+                  <div>Simulate Tampered Amount Attack</div>
+                  <div className="text-xs text-amber-400/70 font-normal">Status: VALID, but amount: ৳1.00</div>
+                </div>
+              </div>
+              <span className="text-xs bg-amber-500/20 px-2 py-0.5 rounded font-mono">RISK_HOLD</span>
+            </button>
           </div>
-        )}
 
-        {/* Action Buttons */}
-        <div className="space-y-3">
-          <button
-            onClick={() => simulateCallback('success')}
-            disabled={loading}
-            className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition shadow-md"
-          >
-            {loading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <>
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Simulate Successful Payment (VALID)</span>
-              </>
-            )}
-          </button>
+          {loading && (
+            <div className="flex items-center justify-center space-x-2 text-sm text-slate-300 py-2">
+              <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+              <span>Transmitting server-to-server callback...</span>
+            </div>
+          )}
 
-          <button
-            onClick={() => simulateCallback('tampered')}
-            disabled={loading}
-            className="w-full py-3 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition"
-          >
-            <AlertTriangle className="w-4 h-4" />
-            <span>Test Security: Tampered Amount (৳1.00)</span>
-          </button>
-
-          <button
-            onClick={() => simulateCallback('failure')}
-            disabled={loading}
-            className="w-full py-3 rounded-xl border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition"
-          >
-            <XCircle className="w-4 h-4" />
-            <span>Simulate Gateway Failure (FAILED)</span>
-          </button>
+          {resultLog && (
+            <div className="p-3 bg-slate-950/80 border border-slate-700 rounded-lg text-xs font-mono text-slate-300 break-all">
+              {resultLog}
+            </div>
+          )}
         </div>
 
-        <div className="pt-2 text-center">
+        {/* Footer */}
+        <div className="bg-slate-900/50 p-4 border-t border-slate-700/50 flex items-center justify-between text-xs text-slate-400">
+          <div className="flex items-center space-x-1.5">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span>Strict SHA-256 HMAC and Val_ID Replay Guard</span>
+          </div>
           <button
             onClick={() => router.back()}
-            className="text-xs text-slate-500 hover:text-slate-800"
+            className="hover:text-white transition-colors flex items-center space-x-1"
           >
-            Cancel and Return
+            <RefreshCw className="w-3 h-3" />
+            <span>Cancel</span>
           </button>
         </div>
       </div>
@@ -169,9 +231,15 @@ function GatewaySimulator() {
   );
 }
 
-export default function GatewayPage() {
+export default function SandboxGatewayPage() {
   return (
-    <Suspense fallback={<div className="p-12 text-center text-xs">Loading simulator...</div>}>
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center">
+          Loading payment gateway session...
+        </div>
+      }
+    >
       <GatewaySimulator />
     </Suspense>
   );

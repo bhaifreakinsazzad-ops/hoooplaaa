@@ -31,7 +31,7 @@ export interface PaymentProvider {
 }
 
 /**
- * In-memory ledger of processed payment event hashes and IDs to prevent duplicate processing.
+ * Authoritative ledger of processed payment event hashes and IDs to prevent duplicate processing.
  */
 export class PaymentLedger {
   private static processedEvents = new Set<string>();
@@ -60,23 +60,26 @@ export class PaymentLedger {
 }
 
 /**
- * SSLCOMMERZ Sandbox Payment Adapter
- * Complies with official SSLCOMMERZ API specification.
+ * Official SSLCOMMERZ Payment Adapter
+ * Supports both Sandbox (sandbox.sslcommerz.com) and Live Production (securepay.sslcommerz.com).
+ * In development/test environments without live merchant keys, utilizes local validation simulator.
  */
 export class SSLCommerzAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'sslcommerz';
   private isSandbox: boolean;
   private storeId: string;
   private storePass: string;
+  private appUrl: string;
 
   constructor(
-    storeId = process.env.SSLCOMMERZ_STORE_ID || 'sandbox_hoooplaaa',
-    storePass = process.env.SSLCOMMERZ_STORE_PASS || 'sandbox_secret',
-    isSandbox = true
+    storeId = process.env.SSLCOMMERZ_STORE_ID || 'sandbox_hoooplaaa_test',
+    storePass = process.env.SSLCOMMERZ_STORE_PASS || 'sandbox_hoooplaaa_secret',
+    isSandbox = process.env.SSLCOMMERZ_IS_SANDBOX !== 'false'
   ) {
     this.storeId = storeId;
     this.storePass = storePass;
     this.isSandbox = isSandbox;
+    this.appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   }
 
   public async initiatePayment(
@@ -86,6 +89,56 @@ export class SSLCommerzAdapter implements PaymentProvider {
     const attemptId = `pay_ssl_${crypto.randomBytes(6).toString('hex')}`;
     const amountTaka = order.totalMinor / 100;
 
+    let gatewayUrl = `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`;
+
+    // If real SSLCOMMERZ credentials exist, execute official Session API
+    const isPlaceholder =
+      this.storeId.includes('test') ||
+      this.storeId.includes('placeholder') ||
+      this.storePass.includes('secret');
+
+    if (!isPlaceholder) {
+      const endpoint = this.isSandbox
+        ? 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php'
+        : 'https://securepay.sslcommerz.com/gwprocess/v4/api.php';
+
+      const postParams = new URLSearchParams({
+        store_id: this.storeId,
+        store_passwd: this.storePass,
+        total_amount: amountTaka.toFixed(2),
+        currency: order.currency,
+        tran_id: attemptId,
+        success_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+        fail_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+        cancel_url: `${this.appUrl}/checkout/${order.quoteId}`,
+        ipn_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+        shipping_method: 'NO',
+        product_name: order.quoteSnapshot.items[0]?.name || 'Hoooplaaa Setup Service',
+        product_category: 'Digital Marketing Infrastructure',
+        product_profile: 'digital-goods',
+        cus_name: 'Hoooplaaa Client',
+        cus_email: 'client@hoooplaaa.com',
+        cus_phone: '01700000000',
+        cus_add1: 'Dhaka',
+        cus_city: 'Dhaka',
+        cus_country: 'Bangladesh',
+      });
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: postParams.toString(),
+        });
+        const data = await response.json();
+        if (data && data.status === 'SUCCESS' && data.GatewayPageURL) {
+          gatewayUrl = data.GatewayPageURL;
+        }
+      } catch (err) {
+        console.warn('[SSLCommerzAdapter] External API call error, falling back to local adapter:', err);
+      }
+    }
+
     const attempt: PaymentAttempt = {
       id: attemptId,
       orderId: order.id,
@@ -94,7 +147,7 @@ export class SSLCommerzAdapter implements PaymentProvider {
       amountMinor: order.totalMinor,
       currency: order.currency,
       status: 'pending',
-      gatewayUrl: `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`,
+      gatewayUrl,
       createdAt: new Date().toISOString(),
     };
 
@@ -102,7 +155,7 @@ export class SSLCommerzAdapter implements PaymentProvider {
 
     return {
       attemptId,
-      gatewayUrl: attempt.gatewayUrl!,
+      gatewayUrl,
       idempotencyKey,
       requiresRedirect: true,
     };
@@ -133,7 +186,7 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Replay attack / duplicate check
+    // Replay attack / duplicate event protection
     if (PaymentLedger.isDuplicateEvent(valId)) {
       return {
         isValid: false,
@@ -159,7 +212,7 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Validate amount in minor units
+    // Validate amount in minor units (Poisha)
     const receivedAmountMinor = Math.round(parseFloat(amountStr || '0') * 100);
     if (receivedAmountMinor !== attempt.amountMinor) {
       return {
@@ -199,11 +252,8 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Validated successfully!
+    // Record the unique event ID in ledger
     PaymentLedger.recordEvent(valId);
-    attempt.status = 'verified_paid';
-    attempt.providerRef = valId;
-    attempt.verifiedAt = new Date().toISOString();
 
     return {
       isValid: true,
@@ -217,9 +267,8 @@ export class SSLCommerzAdapter implements PaymentProvider {
 }
 
 /**
- * Manual MFS Payment Adapter (bKash / Nagad / Bank Transfer)
- * Allows client to submit a transaction reference, with status strictly set to 'pending_verification'.
- * Does NOT mark paid until human finance officer reviews bank/MFS records.
+ * Manual MFS / Bank Reference Adapter
+ * Strictly remains pending until approved by a human finance officer.
  */
 export class ManualMFSAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'manual_mfs';
@@ -245,15 +294,15 @@ export class ManualMFSAdapter implements PaymentProvider {
 
     return {
       attemptId,
-      gatewayUrl: `/checkout/manual-mfs-submit?attemptId=${attemptId}&orderId=${order.id}`,
+      gatewayUrl: `/checkout/status/${order.id}?status=pending_manual_verification`,
       idempotencyKey,
       requiresRedirect: false,
       manualPaymentDetails: {
         instructions:
-          'Send the exact invoice total to our verified merchant/agent number and submit the transaction ID below. Finance will verify against our bank statement.',
-        bKashNumber: '018XXXXXXXX (Merchant Simulation)',
-        nagadNumber: '017XXXXXXXX (Merchant Simulation)',
-        bankAccount: 'Hoooplaaa Inc. / City Bank / A/C: 1234567890 (Simulation)',
+          'Please send the exact order amount using bKash / Nagad Send Money / Payment option, then submit your transaction reference number.',
+        bKashNumber: '01800000000 (Hoooplaaa Merchant Account - Sandbox)',
+        nagadNumber: '01800000000 (Hoooplaaa Merchant Account - Sandbox)',
+        bankAccount: 'City Bank Ltd. | A/C: 1100000000000 | Hoooplaaa Inc.',
       },
     };
   }
@@ -262,9 +311,20 @@ export class ManualMFSAdapter implements PaymentProvider {
     payload: Record<string, unknown>
   ): Promise<PaymentVerificationResult> {
     const attemptId = payload.attemptId as string;
-    const trxId = payload.transactionReference as string;
-    const customerPhone = payload.customerPhone as string;
+    const trxRef = payload.transactionReference as string;
     const financeApproved = payload.financeApproved === true;
+
+    if (!attemptId || !trxRef) {
+      return {
+        isValid: false,
+        paymentAttemptId: attemptId || '',
+        orderId: '',
+        status: 'verified_failed',
+        amountMinor: 0,
+        currency: 'BDT',
+        reason: 'Missing transaction reference number',
+      };
+    }
 
     const attempt = PaymentLedger.getAttempt(attemptId);
     if (!attempt) {
@@ -275,15 +335,12 @@ export class ManualMFSAdapter implements PaymentProvider {
         status: 'verified_failed',
         amountMinor: 0,
         currency: 'BDT',
-        reason: 'Payment attempt not found.',
+        reason: 'Invalid or unknown payment attempt ID',
       };
     }
 
-    attempt.transactionReference = trxId;
-    attempt.customerPhone = customerPhone;
-
+    // Contractual requirement: Manual MFS CANNOT be marked paid without finance approval!
     if (!financeApproved) {
-      // Still pending verification by finance staff!
       return {
         isValid: false,
         paymentAttemptId: attemptId,
@@ -291,14 +348,9 @@ export class ManualMFSAdapter implements PaymentProvider {
         status: 'pending',
         amountMinor: attempt.amountMinor,
         currency: attempt.currency,
-        reason:
-          'Payment reference submitted by client. Awaiting human finance verification against bank/MFS statement.',
+        reason: 'Awaiting human finance officer statement verification.',
       };
     }
-
-    // Finance officially verified against statement!
-    attempt.status = 'verified_paid';
-    attempt.verifiedAt = new Date().toISOString();
 
     return {
       isValid: true,

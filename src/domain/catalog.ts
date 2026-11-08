@@ -41,7 +41,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved fixed-price entry offer
     requiresQuote: false,
-    deliveryTarget: '1–2 business days',
+    deliveryTarget: '4 business days',
     inclusions: [
       'Meta Business Portfolio creation & configuration',
       'Facebook Business Page complete setup with branding',
@@ -78,7 +78,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved fixed-price entry offer
     requiresQuote: false,
-    deliveryTarget: '1–2 business days',
+    deliveryTarget: '4 business days',
     inclusions: [
       'Google Business Profile setup with primary & secondary categories',
       'Accurate NAP (Name, Address, Phone) consistency setup',
@@ -114,7 +114,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved fixed-price entry offer
     requiresQuote: false,
-    deliveryTarget: '1 business day',
+    deliveryTarget: '4 business days',
     inclusions: [
       'LinkedIn Company Page creation or full claim',
       'Branded cover banner and avatar placement',
@@ -150,7 +150,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved hero bundle
     requiresQuote: false,
-    deliveryTarget: '2–4 business days',
+    deliveryTarget: '7 business days',
     inclusions: [
       'Complete Meta Business Portfolio + Facebook Page + Instagram linking',
       'Google Business Profile setup with category and verification roadmap',
@@ -187,7 +187,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved add-on
     requiresQuote: false,
-    deliveryTarget: '2 business days',
+    deliveryTarget: '3 business days',
     inclusions: [
       'WhatsApp Business App or Cloud API foundational setup',
       'Automated greeting / welcome message sequence',
@@ -223,7 +223,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved add-on
     requiresQuote: false,
-    deliveryTarget: '1–2 business days',
+    deliveryTarget: '3 business days',
     inclusions: [
       'Meta Pixel generation within client Business Portfolio',
       'Base pixel code installation on 1 website / domain',
@@ -259,7 +259,7 @@ export const CANONICAL_SERVICES: Service[] = [
     publicationStatus: 'published',
     checkoutEnabled: true, // Approved add-on
     requiresQuote: false,
-    deliveryTarget: '1–2 business days',
+    deliveryTarget: '2 business days',
     inclusions: [
       '1 original bespoke static visual design concept',
       'Multi-placement adaptation (1:1 Square + 9:16 Story format)',
@@ -304,3 +304,19 @@ export const CANONICAL_SERVICES: Service[] = [
     provenance: 'D1/D2 Source Allocation Archive',
   },
 ];
+
+// Bidirectional SKU Aliases for SQL Migration & Code Compatibility
+const SKU_ALIASES: Record<string, string> = {
+  'SETUP-META-BUSINESS': 'HI-SET-META',
+  'SETUP-GOOGLE-BUSINESS': 'HI-SET-GOOGLE',
+  'SETUP-LINKEDIN-COMPANY': 'HI-SET-LINKEDIN',
+  'SETUP-OMNI-3PLATFORM': 'HI-BUNDLE-3',
+  'ADDON-WHATSAPP-AUTOMATION': 'HI-ADD-WA',
+  'ADDON-META-PIXEL-TRACKING': 'HI-ADD-PIXEL',
+  'ADDON-BASIC-AD-CREATIVE': 'HI-ADD-CREATIVE',
+};
+
+export function findServiceBySku(sku: string): Service | undefined {
+  const canonicalSku = SKU_ALIASES[sku] || sku;
+  return CANONICAL_SERVICES.find((s) => s.sku === canonicalSku || s.sku === sku);
+}
