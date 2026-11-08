@@ -10,7 +10,11 @@ import crypto from 'crypto';
  * Blocked in staging and production deployments.
  * Translates `@supabase/supabase-js` Auth (`/auth/v1`), PostgREST (`/rest/v1`),
  * and Storage (`/storage/v1`) HTTP requests into real PostgreSQL 16 SQL queries
- * executed against `supabase/migrations/20261108000000_canonical_production_schema_v5.sql`.
+ * executed against EVERY file in `supabase/migrations/` in order.
+ *
+ * LOCAL ONLY — this proves SQL grants/RLS/function behaviour on a disposable PostgreSQL (PGlite) with
+ * REAL roles (SET LOCAL ROLE anon | authenticated | service_role). It does NOT prove a deployed
+ * Supabase project's configuration, Auth, PostgREST or Storage.
  */
 
 interface TestAuthAccount {
@@ -91,22 +95,29 @@ export async function getInitializedTestPostgres(): Promise<PGlite> {
         END $$;
       `);
 
-      // 2. Execute the exact production migration SQL
-      const migrationPath = path.resolve(
-        process.cwd(),
-        'supabase/migrations/20261108000000_canonical_production_schema_v5.sql'
-      );
-      const migrationSql = fs.readFileSync(migrationPath, 'utf-8');
-      await pg.exec(migrationSql);
-
-      // Grant table permissions to roles in PG16
+      // 2. Emulate Supabase's platform baseline (default privileges for API roles), THEN run the
+      //    exact production migrations in order. Hardening must therefore work against the same
+      //    over-broad defaults a real Supabase project starts with.
       await pg.exec(`
         GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
         GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA auth TO anon, authenticated, service_role;
         GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-        GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated, service_role;
-        GRANT SELECT ON public.service_catalog TO anon;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
       `);
+
+      const migrationDir = path.resolve(process.cwd(), 'supabase/migrations');
+      const migrationFiles = fs
+        .readdirSync(migrationDir)
+        .filter((f) => f.endsWith('.sql'))
+        .sort();
+      for (const file of migrationFiles) {
+        await pg.exec(fs.readFileSync(path.join(migrationDir, file), 'utf-8'));
+      }
+
+      // Disposable test database ONLY: permit the local payment simulator (false by default in the migration).
+      await pg.exec(`UPDATE public.platform_flags SET bool_value = true WHERE flag_key = 'allow_simulated_payments';`);
 
       // 3. Seed disposable test fixture accounts ONLY inside the test harness
       await seedTestAccountsInternal(pg, [
@@ -470,8 +481,7 @@ export async function supabasePgliteFetch(
       apiKey === 'test-service-role-key' ||
       apiKey === process.env.SUPABASE_SERVICE_ROLE_KEY ||
       authHeader === 'Bearer test-service-role-key' ||
-      authHeader === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` ||
-      authHeader.includes('service_role')
+      authHeader === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`
     ) {
       callerRole = 'service_role';
     } else if (authHeader.startsWith('Bearer ') || authHeader.startsWith('bearer ')) {
@@ -479,16 +489,16 @@ export async function supabasePgliteFetch(
       if (token === 'test-anon-key' || token === process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || token === 'anon') {
         callerRole = 'anon';
       } else if (token.startsWith('mock-jwt-customer-')) {
-        callerRole = 'customer';
+        callerRole = 'authenticated';
         callerUserId = token.replace('mock-jwt-customer-', '');
       } else if (token.startsWith('mock-jwt-finance-')) {
-        callerRole = 'finance';
+        callerRole = 'authenticated';
         callerUserId = token.replace('mock-jwt-finance-', '');
       } else if (token.startsWith('mock-jwt-admin-')) {
-        callerRole = 'admin';
+        callerRole = 'authenticated';
         callerUserId = token.replace('mock-jwt-admin-', '');
       } else if (token.startsWith('mock-jwt-staff-')) {
-        callerRole = 'engineer';
+        callerRole = 'authenticated';
         callerUserId = token.replace('mock-jwt-staff-', '');
       } else {
         const found = globalState.activeTokens.get(token);
@@ -508,76 +518,49 @@ export async function supabasePgliteFetch(
       }
     }
 
-    // Set PostgreSQL transaction session settings for PGlite
-    try {
-      if (callerUserId) {
-        await pg.query(`SELECT set_config('request.jwt.claim.sub', $1, false), set_config('request.jwt.claim.role', $2, false);`, [callerUserId, callerRole]);
-      } else {
-        await pg.query(`SELECT set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', $1, false);`, [callerRole]);
-      }
-    } catch {
-      // non-fatal
-    }
+    const pgRole =
+      callerRole === 'service_role' ? 'service_role' : callerRole === 'anon' ? 'anon' : 'authenticated';
+
+    // Every request runs inside a transaction under the REAL PostgreSQL role (no JS-side permission fakery).
+    const runAs = async <T,>(fn: (tx: { query: PGlite['query'] }) => Promise<T>): Promise<T> =>
+      pg.transaction(async (tx) => {
+        await tx.query(`SET LOCAL ROLE ${pgRole}`);
+        await tx.query(
+          `SELECT set_config('request.jwt.claim.sub', $1, true), set_config('request.jwt.claim.role', $2, true)`,
+          [callerUserId, pgRole]
+        );
+        return fn(tx as unknown as { query: PGlite['query'] });
+      });
+
+    const pgErrorResponse = (err: any): Response => {
+      const code = err?.code || 'P0001';
+      const status = code === '42501' ? 403 : 400;
+      return Response.json(
+        { code, message: err?.message || 'Database error', details: String(err) },
+        { status }
+      );
+    };
 
     // 3a. RPC STORED PROCEDURE CALLS (/rest/v1/rpc/<fnName>)
     if (url.pathname.startsWith('/rest/v1/rpc/')) {
       const fnName = url.pathname.replace('/rest/v1/rpc/', '').replace(/\/$/, '');
-
-      // Priority 0: Lock down privileged SECURITY DEFINER RPC functions from client execution
-      const privilegedRpcFunctions = [
-        'settle_order_payment_paid',
-        'convert_quote_to_active_order',
-        'claim_guest_quote',
-      ];
-
-      if (privilegedRpcFunctions.includes(fnName)) {
-        if (callerRole !== 'service_role') {
-          return Response.json(
-            {
-              code: '42501',
-              message: `permission denied for function ${fnName}`,
-              details: 'Privileged database function is restricted to service_role',
-              hint: 'Invoke this operation via authoritative server-side endpoints.',
-            },
-            { status: 403 }
-          );
-        }
+      if (!/^[a-z_][a-z0-9_]*$/.test(fnName)) {
+        return Response.json({ code: 'PGRST202', message: 'Invalid function name' }, { status: 404 });
       }
-
-      const rawBody = String(init?.body || '{}');
-      const rpcArgs = JSON.parse(rawBody || '{}');
+      const rpcArgs = JSON.parse(String(init?.body || '{}') || '{}');
 
       try {
         const argKeys = Object.keys(rpcArgs);
-        let sql = '';
-        let values: any[] = [];
-
-        if (argKeys.length === 0) {
-          sql = `SELECT public.${fnName}() as result;`;
-        } else {
-          const namedParams = argKeys.map((k, i) => `${k} => $${i + 1}`);
-          sql = `SELECT public.${fnName}(${namedParams.join(', ')}) as result;`;
-          values = argKeys.map((k) => {
-            const val = rpcArgs[k];
-            if (typeof val === 'object' && val !== null) {
-              return JSON.stringify(val);
-            }
-            return val;
-          });
-        }
-
-        const res = await pg.query<{ result: any }>(sql, values);
-        const result = res.rows[0]?.result;
-        return Response.json(result ?? null, { status: 200 });
+        const namedParams = argKeys.map((k, i) => `${k} => $${i + 1}`);
+        const sql = `SELECT public.${fnName}(${namedParams.join(', ')}) as result;`;
+        const values = argKeys.map((k) => {
+          const val = rpcArgs[k];
+          return typeof val === 'object' && val !== null ? JSON.stringify(val) : val;
+        });
+        const res = await runAs((tx) => tx.query<{ result: any }>(sql, values));
+        return Response.json((res.rows[0] as any)?.result ?? null, { status: 200 });
       } catch (rpcErr: any) {
-        return Response.json(
-          {
-            code: rpcErr?.code || 'P0001',
-            message: rpcErr?.message || 'Stored procedure execution failed',
-            details: String(rpcErr),
-          },
-          { status: 400 }
-        );
+        return pgErrorResponse(rpcErr);
       }
     }
 
@@ -585,21 +568,8 @@ export async function supabasePgliteFetch(
     if (!table) {
       return Response.json({ status: 'ok' }, { status: 200 });
     }
-
-    // Priority 1: Prevent client-side manipulation of financial records
-    const protectedTables = ['quotes', 'orders', 'payments', 'payment_events', 'audit_logs'];
-    if (['POST', 'PATCH', 'DELETE'].includes(method) && protectedTables.includes(table)) {
-      if (callerRole !== 'service_role') {
-        return Response.json(
-          {
-            code: '42501',
-            message: `permission denied for table ${table}`,
-            details: `Direct client mutation on ${table} is forbidden. Must use authoritative server routes.`,
-            hint: 'Use the official server endpoints to generate quotes, initiate orders, or record payments.',
-          },
-          { status: 403 }
-        );
-      }
+    if (!/^[a-z_][a-z0-9_]*$/.test(table)) {
+      return Response.json({ code: 'PGRST205', message: 'Invalid relation name' }, { status: 404 });
     }
 
     const prefer = headers.get('Prefer') || headers.get('prefer') || '';
@@ -613,10 +583,12 @@ export async function supabasePgliteFetch(
         const orderParam = url.searchParams.get('order');
         if (orderParam) {
           const [col, dir] = orderParam.split('.');
-          orderSql = `ORDER BY ${col} ${dir?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC'}`;
+          if (/^[a-z_][a-z0-9_]*$/.test(col)) {
+            orderSql = `ORDER BY ${col} ${dir?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC'}`;
+          }
         }
         const sql = `SELECT * FROM public.${table} ${whereSql} ${orderSql}`;
-        const res = await pg.query(sql);
+        const res = await runAs((tx) => tx.query(sql));
 
         if (isSingle) {
           if (res.rows.length === 0) {
@@ -638,9 +610,7 @@ export async function supabasePgliteFetch(
 
         const cols = Object.keys(rows[0]);
         const colList = cols.join(', ');
-        const valueGroups = rows.map(
-          (r) => `(${cols.map((c) => sqlLiteral(r[c])).join(', ')})`
-        );
+        const valueGroups = rows.map((r) => `(${cols.map((c) => sqlLiteral(r[c])).join(', ')})`);
 
         let conflictSql = '';
         const onConflict = url.searchParams.get('on_conflict');
@@ -659,7 +629,7 @@ export async function supabasePgliteFetch(
         }
 
         const sql = `INSERT INTO public.${table} (${colList}) VALUES ${valueGroups.join(', ')} ${conflictSql} RETURNING *`;
-        const res = await pg.query(sql);
+        const res = await runAs((tx) => tx.query(sql));
         const out = isSingle ? res.rows[0] || null : res.rows;
         return Response.json(out, { status: 201 });
       }
@@ -669,7 +639,7 @@ export async function supabasePgliteFetch(
         const setParts = Object.entries(updates).map(([k, v]) => `${k} = ${sqlLiteral(v)}`);
         const whereSql = buildWhereClause(url.searchParams);
         const sql = `UPDATE public.${table} SET ${setParts.join(', ')} ${whereSql} RETURNING *`;
-        const res = await pg.query(sql);
+        const res = await runAs((tx) => tx.query(sql));
         const out = isSingle ? res.rows[0] || null : res.rows;
         return Response.json(out, { status: 200 });
       }
@@ -677,14 +647,11 @@ export async function supabasePgliteFetch(
       if (method === 'DELETE') {
         const whereSql = buildWhereClause(url.searchParams);
         const sql = `DELETE FROM public.${table} ${whereSql} RETURNING *`;
-        const res = await pg.query(sql);
+        const res = await runAs((tx) => tx.query(sql));
         return Response.json(res.rows, { status: 200 });
       }
     } catch (err: any) {
-      return Response.json(
-        { code: '23505', message: err?.message || 'Database error', details: String(err) },
-        { status: 400 }
-      );
+      return pgErrorResponse(err);
     }
   }
 

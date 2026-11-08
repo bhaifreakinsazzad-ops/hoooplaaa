@@ -2,8 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'crypto';
 import { persistentDB } from '@/domain/persistent-db';
 import { resetTestPostgresData, supabasePgliteFetch } from '../src/testing/supabase-pglite-bridge';
-import { OrderService, addBusinessDays, getServiceTurnaroundBusinessDays } from '@/domain/order-service';
+import {
+  OrderService,
+  addBusinessDays,
+  getBusinessCalendar,
+  getServiceTurnaroundBusinessDays,
+} from '@/domain/order-service';
 import { QuoteSnapshot } from '@/domain/types';
+import { hashGuestClaimToken } from '@/domain/guest-claim';
 
 describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA Suite', () => {
   const TEST_ORG_ALPHA = '10000000-0000-4000-a000-000000000001';
@@ -35,6 +41,7 @@ describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA
       body: JSON.stringify({
         p_order_id: 'ord_fake_id',
         p_payment_attempt_code: 'pay_fake',
+        p_settlement_source: 'finance_manual',
       }),
     });
 
@@ -155,9 +162,8 @@ describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA
   // PRIORITY 3: SINGLE-USE CAPABILITY TOKEN FOR GUEST QUOTE CLAIMING
   // ============================================================================
 
-  it('6. Guest quote claiming strictly requires valid single-use claimToken and prevents unauthorized takeover', async () => {
-    const rawClaimToken = crypto.randomBytes(32).toString('hex');
-    const claimTokenHash = crypto.createHash('sha256').update(rawClaimToken).digest('hex');
+  it('6. Guest quote claiming strictly requires the valid single-use capability and prevents unauthorized takeover', async () => {
+    const rawClaimToken = crypto.randomBytes(32).toString('base64url');
 
     const guestQuote: QuoteSnapshot = {
       id: `QUO-GUEST-${Date.now()}`,
@@ -188,17 +194,18 @@ describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA
       currency: 'BDT',
       eligibility: { isEligible: true, canSelfCheckout: true, flags: [] },
       status: 'priced',
-      claimToken: rawClaimToken,
-      claimTokenHash,
     };
 
-    // Save authoritative guest quote (unassigned customer/org)
-    await persistentDB.saveQuote(guestQuote);
+    // Save authoritative guest quote (unassigned customer/org); only the HASH of the capability is stored
+    await persistentDB.saveQuote(guestQuote, undefined, undefined, {
+      tokenHash: hashGuestClaimToken(rawClaimToken),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
 
-    // Attempt 1: Unauthorized customer attempts to claim quote without token -> FAILS
+    // Attempt 1: Unauthorized customer attempts to claim quote with a wrong token -> FAILS
     await expect(
       persistentDB.claimGuestQuote(guestQuote.id, TEST_CUSTOMER_BETA, TEST_ORG_BETA, 'wrong_token_value')
-    ).rejects.toThrow(/Invalid or missing quote claim token/i);
+    ).rejects.toThrow(/Unauthorized: invalid guest quote claim/i);
 
     // Attempt 2: Authorized claiming with correct single-use capability token -> SUCCEEDS
     const claimedQuote = await persistentDB.claimGuestQuote(
@@ -244,24 +251,26 @@ describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA
     ).toBe(4);
   });
 
-  it('8. Business day calculator strictly excludes weekends (Saturday and Sunday)', () => {
-    // Friday start date: 2026-11-13 (Friday)
-    const friday = new Date('2026-11-13T10:00:00.000Z');
+  it('8. Business day calculator follows the configurable Asia/Dhaka calendar (policy, not a silent Sat/Sun assumption)', () => {
+    const satSunPolicy = { ...getBusinessCalendar(), weekendDays: [0, 6], holidays: [] as string[] };
+    // Friday 2026-11-13 10:00 Asia/Dhaka (= 04:00Z)
+    const friday = new Date('2026-11-13T04:00:00.000Z');
 
-    // 1 business day from Friday -> Monday 2026-11-16 (skips Saturday 14 & Sunday 15)
-    const oneDay = addBusinessDays(friday, 1);
-    expect(oneDay.getUTCDay()).toBe(1); // Monday
-    expect(oneDay.toISOString().split('T')[0]).toBe('2026-11-16');
+    // Sat/Sun policy: 1 BD -> Monday 16th, 2 BD -> Tuesday 17th, 4 BD -> Thursday 19th (same local time)
+    expect(addBusinessDays(friday, 1, satSunPolicy).toISOString()).toBe('2026-11-16T04:00:00.000Z');
+    expect(addBusinessDays(friday, 2, satSunPolicy).toISOString()).toBe('2026-11-17T04:00:00.000Z');
+    expect(addBusinessDays(friday, 4, satSunPolicy).toISOString()).toBe('2026-11-19T04:00:00.000Z');
 
-    // 2 business days from Friday -> Tuesday 2026-11-17
-    const twoDays = addBusinessDays(friday, 2);
-    expect(twoDays.getUTCDay()).toBe(2); // Tuesday
-    expect(twoDays.toISOString().split('T')[0]).toBe('2026-11-17');
-
-    // 4 business days (Hero Bundle) from Friday -> Thursday 2026-11-19
-    const fourDays = addBusinessDays(friday, 4);
-    expect(fourDays.getUTCDay()).toBe(4); // Thursday
-    expect(fourDays.toISOString().split('T')[0]).toBe('2026-11-19');
+    // Default provisional policy (Friday/Saturday weekend): Friday start rolls to Sunday 15th 09:00 local
+    // (03:00Z), then 1 BD -> Monday 16th 09:00 local.
+    const fri = { ...getBusinessCalendar(), weekendDays: [5, 6], holidays: [] as string[] };
+    expect(addBusinessDays(friday, 1, fri).toISOString()).toBe('2026-11-16T03:00:00.000Z');
+    // After cutoff (17:00 local) on Thursday 12th -> clock starts Sunday 15th opening
+    const thursdayEvening = new Date('2026-11-12T12:30:00.000Z'); // 18:30 local
+    expect(addBusinessDays(thursdayEvening, 1, fri).toISOString()).toBe('2026-11-16T03:00:00.000Z');
+    // Holiday skipping
+    const withHoliday = { ...fri, holidays: ['2026-11-16'] };
+    expect(addBusinessDays(friday, 1, withHoliday).toISOString()).toBe('2026-11-17T03:00:00.000Z');
   });
 
   it('9. SLA clock triggers ONLY when BOTH payment is verified AND intake requirements are completed', async () => {
@@ -330,8 +339,16 @@ describe('V7.2 Privileged RPC Lockdown, Pricing Integrity & Service-Specific SLA
     const settled = await persistentDB.settleOrderPaymentPaid({
       orderId: order.id,
       paymentAttemptId,
-      verifiedByStaffId: '00000000-0000-4000-a000-000000000003',
-      evidencePayload: { gateway: 'SSLCommerz', tran_id: 'TRX_SLA_01' },
+      source: 'sslcommerz_s2s_validated',
+      providerValId: 'SSL-VAL-SLA-01',
+      evidencePayload: {
+        providerValidated: true,
+        status: 'VALID',
+        tranId: paymentAttemptId,
+        valId: 'SSL-VAL-SLA-01',
+        amountMinor: 300000,
+        currency: 'BDT',
+      },
     });
 
     expect(settled.order.financialStatus).toBe('paid');

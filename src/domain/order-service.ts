@@ -9,19 +9,91 @@ import {
 import crypto from 'crypto';
 
 /**
- * Adds business days to a given start date (skipping Saturday and Sunday).
+ * Business calendar used for every delivery SLA. It mirrors public.business_calendar_policy /
+ * public.add_business_days in SQL (see supabase/migrations/20261110000000_v7_2r_security_hardening.sql).
+ *
+ * POLICY STATUS: PROVISIONAL_UNAPPROVED. The weekend (Friday/Saturday here, 0=Sun..6=Sat) and the public
+ * holiday list are OWNER decisions that have not been confirmed. They are configurable
+ * (BUSINESS_WEEKEND_DAYS="5,6", BUSINESS_HOLIDAYS="2026-12-16,2026-12-25") and every SLA records the policy
+ * status it was computed under.
  */
-export function addBusinessDays(startDate: Date, days: number): Date {
-  const result = new Date(startDate);
-  let added = 0;
-  while (added < days) {
-    result.setDate(result.getDate() + 1);
-    const dow = result.getDay();
-    if (dow !== 0 && dow !== 6) {
-      added++;
-    }
+export interface BusinessCalendar {
+  timezone: 'Asia/Dhaka';
+  utcOffsetMinutes: number; // Asia/Dhaka is a fixed UTC+06:00 (no DST)
+  weekendDays: number[];
+  holidays: string[]; // YYYY-MM-DD in local (Asia/Dhaka) calendar
+  opensMinutes: number; // minutes after local midnight
+  cutoffMinutes: number;
+  policyStatus: 'PROVISIONAL_UNAPPROVED' | 'APPROVED';
+}
+
+export function getBusinessCalendar(): BusinessCalendar {
+  const parseDays = (v: string | undefined, fallback: number[]) => {
+    if (!v) return fallback;
+    const parsed = v
+      .split(',')
+      .map((x) => parseInt(x.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
+    return parsed.length > 0 ? parsed : fallback;
+  };
+  return {
+    timezone: 'Asia/Dhaka',
+    utcOffsetMinutes: 360,
+    weekendDays: parseDays(process.env.BUSINESS_WEEKEND_DAYS, [5, 6]),
+    holidays: (process.env.BUSINESS_HOLIDAYS || '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter((x) => /^d{4}-d{2}-d{2}$/.test(x)),
+    opensMinutes: 9 * 60,
+    cutoffMinutes: 17 * 60,
+    policyStatus: process.env.BUSINESS_CALENDAR_APPROVED === 'true' ? 'APPROVED' : 'PROVISIONAL_UNAPPROVED',
+  };
+}
+
+function isBusinessDay(localDay: Date, cal: BusinessCalendar): boolean {
+  const iso = localDay.toISOString().slice(0, 10);
+  return !cal.weekendDays.includes(localDay.getUTCDay()) && !cal.holidays.includes(iso);
+}
+
+/**
+ * Adds N business days (policy calendar in Asia/Dhaka), preserving time of day. If the start instant is
+ * on a non-business day or at/after the cutoff, the clock starts at opening time of the next business day;
+ * before opening on a business day it starts at opening time.
+ */
+export function addBusinessDays(
+  startDate: Date,
+  days: number,
+  calendar: BusinessCalendar = getBusinessCalendar()
+): Date {
+  const offsetMs = calendar.utcOffsetMinutes * 60_000;
+  // Represent local wall-clock time using UTC getters on a shifted Date.
+  const local = new Date(startDate.getTime() + offsetMs);
+  const day = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()));
+  let msOfDay =
+    local.getUTCHours() * 3_600_000 +
+    local.getUTCMinutes() * 60_000 +
+    local.getUTCSeconds() * 1000 +
+    local.getUTCMilliseconds();
+
+  const opensMs = calendar.opensMinutes * 60_000;
+  const cutoffMs = calendar.cutoffMinutes * 60_000;
+
+  if (!isBusinessDay(day, calendar) || msOfDay >= cutoffMs) {
+    do {
+      day.setUTCDate(day.getUTCDate() + 1);
+    } while (!isBusinessDay(day, calendar));
+    msOfDay = opensMs;
+  } else if (msOfDay < opensMs) {
+    msOfDay = opensMs;
   }
-  return result;
+
+  let added = 0;
+  while (added < Math.max(days, 0)) {
+    day.setUTCDate(day.getUTCDate() + 1);
+    if (isBusinessDay(day, calendar)) added++;
+  }
+
+  return new Date(day.getTime() + msOfDay - offsetMs);
 }
 
 /**
@@ -162,6 +234,7 @@ export class OrderService {
       const targetDate = addBusinessDays(now, targetBusinessDays);
       updated.deliveryTargetDate = targetDate.toISOString();
       (updated as any).turnaroundBusinessDays = targetBusinessDays;
+      (updated as any).slaCalendarPolicy = getBusinessCalendar().policyStatus;
     } else {
       // Order paid status is pending, stay in awaiting_payment or payment_under_review
       // SLA cannot start yet

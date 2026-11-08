@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';
 import { calculateServerQuote } from '../src/domain/pricing-engine';
 import { OrderService } from '../src/domain/order-service';
-import { persistentDB } from '../src/domain/persistent-db';
+import { persistentDB, toDeterministicUuid } from '../src/domain/persistent-db';
 import { IntakeAndFileManager } from '../src/domain/intake-and-files';
 
 describe('Relational Database Persistence, Restart Durability & Private File Integrity (V5)', () => {
@@ -60,31 +60,52 @@ describe('Relational Database Persistence, Restart Durability & Private File Int
     await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
 
     const uniqueValId = `VAL_SQL_${Date.now()}`;
-    const firstClaim = await persistentDB.claimUniquePaymentEvent({
-      eventKey: `ssl:${uniqueValId}`,
+    const attemptId = `pay_sql_${Date.now()}`;
+    await persistentDB.recordPaymentAttempt({
+      id: attemptId,
       orderId: order.id,
-      provider: 'sslcommerz',
-      providerValId: uniqueValId,
-      status: 'verified_paid',
-      amountMinor: 150000,
+      paymentMethod: 'sslcommerz',
+      paymentStatus: 'initiated',
+      amountMinor: order.totalMinor,
       currency: 'BDT',
-      evidencePayload: { val_id: uniqueValId },
+      idempotencyKey: `idemp_${attemptId}`,
+      gatewayRawPayload: {},
+      createdAt: new Date().toISOString(),
     });
-    expect(firstClaim.claimed).toBe(true);
+    const settleArgs = {
+      orderId: order.id,
+      paymentAttemptId: attemptId,
+      source: 'sslcommerz_s2s_validated' as const,
+      providerValId: uniqueValId,
+      evidencePayload: {
+        providerValidated: true,
+        status: 'VALID',
+        tranId: attemptId,
+        valId: uniqueValId,
+        amountMinor: order.totalMinor,
+        currency: 'BDT',
+      },
+    };
+    await persistentDB.settleOrderPaymentPaid(settleArgs);
 
-    // Duplicate callback with same val_id must be rejected by SQL unique constraint
-    const replayClaim = await persistentDB.claimUniquePaymentEvent({
-      eventKey: `ssl:${uniqueValId}`,
-      orderId: order.id,
+    // Replay of the same provider validation is idempotent (no second event row)...
+    await persistentDB.settleOrderPaymentPaid(settleArgs);
+    const admin = persistentDB.getSupabaseAdminClient();
+    const events = await admin.from('payment_events').select('event_key').eq('provider_val_id', uniqueValId);
+    expect(events.data?.length).toBe(1);
+
+    // ...and a forged duplicate event row is rejected by the SQL UNIQUE constraint.
+    const dup = await admin.from('payment_events').insert({
+      event_key: `ssl:${uniqueValId}:dup`,
+      order_id: toDeterministicUuid(`order:${order.id}`),
       provider: 'sslcommerz',
-      providerValId: uniqueValId,
-      status: 'verified_paid',
-      amountMinor: 150000,
+      provider_val_id: uniqueValId,
+      status: 'verified',
+      amount_minor: order.totalMinor,
       currency: 'BDT',
-      evidencePayload: { val_id: uniqueValId },
+      evidence_payload: {},
     });
-    expect(replayClaim.claimed).toBe(false);
-    expect(replayClaim.reason).toContain('already processed');
+    expect(dup.error).toBeTruthy();
   });
 
   it('3. Persists real binary file bytes in the private vault and verifies SHA-256 digest on retrieval', async () => {

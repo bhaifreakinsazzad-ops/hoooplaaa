@@ -114,8 +114,6 @@ export interface QuoteSnapshot {
   currency: Currency;
   eligibility: EligibilityEvaluation;
   status: 'draft' | 'priced' | 'accepted' | 'expired' | 'requires_manual_scope';
-  claimToken?: string;
-  claimTokenHash?: string;
   clientIp?: string;
   customerId?: string;
   organizationId?: string;

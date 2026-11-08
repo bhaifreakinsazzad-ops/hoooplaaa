@@ -1,3 +1,4 @@
+import { constantTimeEqualHex, hashGuestClaimToken, stripClaimSecrets } from './guest-claim';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 
@@ -388,10 +389,13 @@ class PersistentDatabaseEngine {
   public async saveQuote(
     quote: QuoteSnapshot,
     customerId?: string,
-    organizationId?: string
+    organizationId?: string,
+    guestClaim?: { tokenHash: string; expiresAt: string }
   ): Promise<QuoteSnapshot> {
     const supabase = this.getSupabaseAdminClient();
     const quoteUuid = toDeterministicUuid(`quote:${quote.id}`);
+    // Claim secrets are never persisted inside the quote payload.
+    const safeQuote = stripClaimSecrets(quote as unknown as Record<string, any>) as unknown as QuoteSnapshot;
 
     const validCustomerId = customerId && isValidUuid(customerId) ? customerId : null;
     const validOrgId = organizationId && isValidUuid(organizationId) ? organizationId : null;
@@ -411,9 +415,8 @@ class PersistentDatabaseEngine {
         eligibility_snapshot: quote.eligibility,
         status: quote.status,
         quote_hash: quote.termsHash || 'v6_authoritative_hash',
-        claim_token_hash: (quote as any).claimTokenHash || null,
         expires_at: quote.expiresAt,
-        payload_json: quote,
+        payload_json: safeQuote,
         created_at: quote.createdAt,
       },
       { onConflict: 'quote_code' }
@@ -423,7 +426,40 @@ class PersistentDatabaseEngine {
       throw new Error(`Supabase saveQuote failed: ${error.message}`);
     }
 
-    return quote;
+    if (guestClaim && !validCustomerId) {
+      const { error: claimError } = await supabase.from('quote_claims').upsert(
+        {
+          quote_id: quoteUuid,
+          token_hash: guestClaim.tokenHash,
+          expires_at: guestClaim.expiresAt,
+        },
+        { onConflict: 'quote_id' }
+      );
+      if (claimError) {
+        throw new Error(`Supabase saveQuote claim registration failed: ${claimError.message}`);
+      }
+    }
+
+    return safeQuote;
+  }
+
+  /**
+   * Server-side verification of a guest quote capability (hash compare, expiry, single use).
+   * Never returns or logs the secret.
+   */
+  public async verifyGuestQuoteClaim(quoteId: string, token: string | undefined): Promise<boolean> {
+    if (!token) return false;
+    const supabase = this.getSupabaseAdminClient();
+    const quoteUuid = toDeterministicUuid(`quote:${quoteId}`);
+    const { data, error } = await supabase
+      .from('quote_claims')
+      .select('token_hash, expires_at, claimed_at')
+      .eq('quote_id', quoteUuid);
+    if (error || !data?.[0]) return false;
+    const row = data[0] as { token_hash: string | null; expires_at: string; claimed_at: string | null };
+    if (!row.token_hash || row.claimed_at) return false;
+    if (new Date(row.expires_at).getTime() < Date.now()) return false;
+    return constantTimeEqualHex(hashGuestClaimToken(token), row.token_hash);
   }
 
   public async getQuote(quoteId: string): Promise<QuoteSnapshot | undefined> {
@@ -432,7 +468,7 @@ class PersistentDatabaseEngine {
 
     const { data, error } = await supabase
       .from('quotes')
-      .select('payload_json, organization_id, customer_id, claim_token_hash')
+      .select('payload_json, organization_id, customer_id')
       .or(`quote_code.eq.${quoteId},id.eq.${quoteUuid}`);
 
     if (error) {
@@ -444,14 +480,11 @@ class PersistentDatabaseEngine {
     const parsed = (typeof row.payload_json === 'string'
       ? JSON.parse(row.payload_json)
       : row.payload_json) as QuoteSnapshot;
-    (parsed as any).claimTokenHash = row.claim_token_hash;
-    return parsed;
-
     return {
-      ...parsed,
+      ...stripClaimSecrets(parsed as unknown as Record<string, any>),
       customerId: row.customer_id || (parsed as any).customerId,
       organizationId: row.organization_id || (parsed as any).organizationId,
-    };
+    } as unknown as QuoteSnapshot;
   }
 
   // ============================================================================
@@ -610,6 +643,7 @@ class PersistentDatabaseEngine {
   public async settleOrderPaymentPaid(params: {
     orderId: string;
     paymentAttemptId: string;
+    source: 'sslcommerz_s2s_validated' | 'local_simulator' | 'finance_manual';
     verifiedByStaffId?: string;
     providerValId?: string;
     evidencePayload?: Record<string, unknown>;
@@ -619,6 +653,7 @@ class PersistentDatabaseEngine {
     const { data, error } = await supabase.rpc('settle_order_payment_paid', {
       p_order_id: params.orderId,
       p_payment_attempt_code: params.paymentAttemptId,
+      p_settlement_source: params.source,
       p_staff_id: params.verifiedByStaffId || null,
       p_provider_val_id: params.providerValId || null,
       p_evidence_payload: params.evidencePayload || {},
@@ -667,9 +702,17 @@ class PersistentDatabaseEngine {
   }): Promise<{ order: Order; isNew: boolean }> {
     const supabase = this.getSupabaseAdminClient();
 
-    const cleanQuoteId = params.quote.id.replace(/-/g, '').slice(0, 16);
+    // Deterministic per quote (idempotent re-conversion) and collision-resistant: the order number is
+    // derived from a hash of the full quote id. (The earlier slice(0, 6) of the id only varied every ~16h,
+    // so any two orders created in the same window collided on orders_order_number_key.)
+    const cleanQuoteId = params.quote.id.replace(/-/g, '');
     const orderCode = `ord_${cleanQuoteId}`;
-    const orderNumber = `HOO-${new Date().getFullYear()}-${cleanQuoteId.slice(0, 6).toUpperCase()}`;
+    const orderNumber = `HOO-${new Date().getFullYear()}-${crypto
+      .createHash('sha256')
+      .update(params.quote.id)
+      .digest('hex')
+      .slice(0, 10)
+      .toUpperCase()}`;
 
     const newOrder = OrderService.createOrderFromQuote(params.quote, params.customerId);
     newOrder.id = orderCode;
@@ -808,7 +851,7 @@ class PersistentDatabaseEngine {
         gateway_raw_payload: payloadWithMeta,
         created_at: record.createdAt,
       },
-      { onConflict: 'idempotency_key' }
+      { onConflict: 'attempt_code' }
     );
 
     if (error) {
@@ -816,6 +859,55 @@ class PersistentDatabaseEngine {
     }
 
     return record;
+  }
+
+  /**
+   * Inserts a NEW payment attempt without ever overwriting an existing one.
+   * DB constraints (unique idempotency_key + one open attempt per order/method) make concurrent
+   * duplicate initiations collapse onto a single logical attempt.
+   * Returns `created: false` with the already-open attempt when a duplicate is detected.
+   */
+  public async createPaymentAttemptOnce(
+    record: DbPaymentRecord
+  ): Promise<{ record: DbPaymentRecord; created: boolean }> {
+    const supabase = this.getSupabaseAdminClient();
+    const paymentUuid = toDeterministicUuid(`pay:${record.id}`);
+
+    const { data: orderRows } = await supabase
+      .from('orders')
+      .select('id')
+      .or(`order_code.eq.${record.orderId},order_number.eq.${record.orderId}`)
+      .limit(1);
+    const orderUuid = orderRows?.[0]?.id || toDeterministicUuid(`order:${record.orderId}`);
+
+    const { error } = await supabase.from('payments').insert({
+      id: paymentUuid,
+      attempt_code: record.id,
+      order_id: orderUuid,
+      payment_method: record.paymentMethod,
+      payment_status: record.paymentStatus,
+      amount_minor: record.amountMinor,
+      currency: record.currency,
+      idempotency_key: record.idempotencyKey,
+      provider_session_key: record.providerSessionKey || null,
+      gateway_raw_payload: {
+        ...record.gatewayRawPayload,
+        __orderCode: record.orderId,
+        __attemptCode: record.id,
+      },
+      created_at: record.createdAt,
+    });
+
+    if (!error) return { record, created: true };
+
+    const existing = (await this.getPaymentsForOrder(record.orderId)).find(
+      (p) =>
+        p.idempotencyKey === record.idempotencyKey ||
+        (p.paymentMethod === record.paymentMethod &&
+          (p.paymentStatus === 'initiated' || p.paymentStatus === 'pending_verification'))
+    );
+    if (existing) return { record: existing, created: false };
+    throw new Error(`Supabase createPaymentAttemptOnce failed: ${error.message}`);
   }
 
   public async getPaymentByAttemptId(attemptId: string): Promise<DbPaymentRecord | null> {
@@ -856,63 +948,6 @@ class PersistentDatabaseEngine {
       gatewayRawPayload: raw,
       createdAt: r.created_at,
     };
-  }
-
-  /**
-   * Concurrency-safe database-level idempotency and replay check.
-   * Enforces PostgreSQL `UNIQUE` constraints on `provider_val_id` and `event_key` in `public.payment_events`.
-   */
-  public async claimUniquePaymentEvent(params: {
-    eventKey: string;
-    orderId: string;
-    paymentId?: string;
-    provider: string;
-    providerValId: string;
-    status: string;
-    amountMinor: number;
-    currency: string;
-    evidencePayload: Record<string, unknown>;
-  }): Promise<{ claimed: boolean; reason?: string }> {
-    const supabase = this.getSupabaseAdminClient();
-
-    const { data: existing } = await supabase
-      .from('payment_events')
-      .select('id')
-      .or(`provider_val_id.eq.${params.providerValId},event_key.eq.${params.eventKey}`);
-
-    if (existing && existing.length > 0) {
-      return {
-        claimed: false,
-        reason: `Duplicate payment event detected / replay attack blocked by database constraint: validation ID (${params.providerValId}) already processed.`,
-      };
-    }
-
-    const eventUuid = toDeterministicUuid(`pevt:${params.eventKey}`);
-    const orderUuid = toDeterministicUuid(`order:${params.orderId}`);
-    const paymentUuid = params.paymentId ? toDeterministicUuid(`pay:${params.paymentId}`) : null;
-
-    const { error } = await supabase.from('payment_events').insert({
-      id: eventUuid,
-      event_key: params.eventKey,
-      order_id: orderUuid,
-      payment_id: paymentUuid,
-      provider: params.provider,
-      provider_val_id: params.providerValId,
-      status: params.status,
-      amount_minor: params.amountMinor,
-      currency: params.currency,
-      evidence_payload: params.evidencePayload,
-      created_at: new Date().toISOString(),
-    });
-
-    if (error) {
-      return {
-        claimed: false,
-        reason: `Database UNIQUE constraint rejected duplicate payment event (${params.providerValId}): ${error.message}`,
-      };
-    }
-
-    return { claimed: true };
   }
 
   public async getPaymentsForOrder(orderId: string): Promise<DbPaymentRecord[]> {

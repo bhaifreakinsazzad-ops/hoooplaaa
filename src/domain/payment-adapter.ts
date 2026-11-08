@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Currency, Order, PaymentMethod } from './types';
-import { persistentDB } from './persistent-db';
+import { persistentDB, DbPaymentRecord } from './persistent-db';
 
 export interface PaymentInitiationResult {
   attemptId: string;
@@ -23,11 +23,15 @@ export interface PaymentVerificationResult {
   amountMinor: number;
   currency: Currency;
   reason?: string;
+  /** Present only when isValid: data the trusted server passes to the atomic settlement RPC. */
+  providerValId?: string;
+  settlementSource?: 'sslcommerz_s2s_validated' | 'local_simulator';
+  evidence?: Record<string, unknown>;
 }
 
 export interface PaymentProvider {
   providerName: PaymentMethod;
-  initiatePayment(order: Order, idempotencyKey: string): Promise<PaymentInitiationResult>;
+  initiatePayment(order: Order, idempotencyKey?: string): Promise<PaymentInitiationResult>;
   verifyCallback(payload: Record<string, unknown>): Promise<PaymentVerificationResult>;
 }
 
@@ -39,6 +43,68 @@ export function isProductionOrStagingEnv(): boolean {
     process.env.VERCEL_ENV === 'preview' ||
     process.env.PAYMENT_MODE === 'production'
   );
+}
+
+const OPEN_GATEWAY_SESSION_MAX_AGE_MS = 25 * 60 * 1000;
+
+/**
+ * Stable logical payment-session idempotency.
+ *  - At most ONE open attempt exists per (order, payment method) — enforced by a partial unique index.
+ *  - A repeated/concurrent checkout request re-uses that open attempt instead of creating a new one.
+ *  - A new attempt is created only after the previous one is terminal (failed) or a gateway session
+ *    went stale; its idempotency key is derived from the attempt sequence (never Date.now()).
+ */
+async function acquirePaymentAttempt(params: {
+  order: Order;
+  paymentMethod: string;
+  attemptPrefix: string;
+  idempotencyKeyHint?: string;
+  initialStatus: 'initiated' | 'pending_verification';
+  initialPayload: Record<string, unknown>;
+}): Promise<{ attempt: DbPaymentRecord; created: boolean }> {
+  const { order, paymentMethod } = params;
+  const existingOrder = await persistentDB.getOrder(order.id);
+  if (!existingOrder) {
+    await persistentDB.saveOrder(order);
+  }
+
+  const history = (await persistentDB.getPaymentsForOrder(order.id)).filter(
+    (p) => p.paymentMethod === paymentMethod
+  );
+  const open = history.find(
+    (p) => p.paymentStatus === 'initiated' || p.paymentStatus === 'pending_verification'
+  );
+  if (open) {
+    const ageMs = Date.now() - new Date(open.createdAt).getTime();
+    const stale =
+      paymentMethod !== 'manual_mfs' &&
+      open.paymentStatus === 'initiated' &&
+      ageMs > OPEN_GATEWAY_SESSION_MAX_AGE_MS;
+    if (!stale) {
+      return { attempt: open, created: false };
+    }
+    await persistentDB.recordPaymentAttempt({
+      ...open,
+      paymentStatus: 'failed',
+      rejectionReason: 'gateway_session_expired',
+    });
+  }
+
+  const now = new Date().toISOString();
+  const idempotencyKey =
+    params.idempotencyKeyHint || `idemp_${order.id}_${paymentMethod}_${history.length}`;
+  const created = await persistentDB.createPaymentAttemptOnce({
+    id: `${params.attemptPrefix}${crypto.randomBytes(6).toString('hex')}`,
+    orderId: order.id,
+    paymentMethod,
+    paymentStatus: params.initialStatus,
+    amountMinor: order.totalMinor,
+    currency: order.currency,
+    idempotencyKey,
+    gatewayRawPayload: { ...params.initialPayload, initiatedAt: now },
+    createdAt: now,
+  });
+  return { attempt: created.record, created: created.created };
 }
 
 /**
@@ -77,22 +143,21 @@ export class SSLCommerzAdapter implements PaymentProvider {
   }
 
   private hasRealMerchantCredentials(): boolean {
+    // Credentials are "real" unless they are empty or the documented placeholders from .env.example.
     return (
       Boolean(this.storeId) &&
       Boolean(this.storePass) &&
-      !this.storeId.includes('test') &&
+      this.storeId !== 'sandbox_hoooplaaa_test' &&
+      this.storePass !== 'sandbox_hoooplaaa_secret' &&
       !this.storeId.includes('placeholder') &&
-      !this.storePass.includes('secret') &&
       !this.storePass.includes('placeholder')
     );
   }
 
   public async initiatePayment(
     order: Order,
-    idempotencyKey: string
+    idempotencyKey?: string
   ): Promise<PaymentInitiationResult> {
-    const attemptId = `pay_ssl_${crypto.randomBytes(6).toString('hex')}`;
-    const amountTaka = order.totalMinor / 100;
     const strictEnv = isProductionOrStagingEnv();
     const hasRealCreds = this.hasRealMerchantCredentials();
 
@@ -102,79 +167,102 @@ export class SSLCommerzAdapter implements PaymentProvider {
       );
     }
 
-    let gatewayUrl = '';
+    const paymentMethod = this.isSandbox ? 'sslcommerz_sandbox' : 'sslcommerz_live';
+    const { attempt, created } = await acquirePaymentAttempt({
+      order,
+      paymentMethod,
+      attemptPrefix: 'pay_ssl_',
+      idempotencyKeyHint: idempotencyKey,
+      initialStatus: 'initiated',
+      initialPayload: {},
+    });
 
-    if (hasRealCreds) {
-      const endpoint = this.isSandbox
-        ? 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php'
-        : 'https://securepay.sslcommerz.com/gwprocess/v4/api.php';
-
-      const postParams = new URLSearchParams({
-        store_id: this.storeId,
-        store_passwd: this.storePass,
-        total_amount: amountTaka.toFixed(2),
-        currency: order.currency,
-        tran_id: attemptId,
-        success_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
-        fail_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
-        cancel_url: `${this.appUrl}/checkout/${order.quoteId}`,
-        ipn_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
-        shipping_method: 'NO',
-        product_name: order.quoteSnapshot.items[0]?.name || 'Hoooplaaa Setup Service',
-        product_category: 'Digital Marketing Infrastructure',
-        product_profile: 'digital-goods',
-        cus_name: order.quoteSnapshot.businessName || 'Hoooplaaa Client',
-        cus_email: 'billing@hoooplaaa.com',
-        cus_phone: '01700000000',
-        cus_add1: 'Dhaka',
-        cus_city: 'Dhaka',
-        cus_country: 'Bangladesh',
-      });
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: postParams.toString(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`SSLCOMMERZ Session API HTTP error: ${response.status}`);
+    if (!created) {
+      const existingUrl = attempt.gatewayRawPayload?.gatewayUrl as string | undefined;
+      if (!existingUrl) {
+        throw new Error('Payment session is being prepared. Please retry in a moment.');
       }
-
-      const data = await response.json();
-      if (!data || data.status !== 'SUCCESS' || !data.GatewayPageURL) {
-        throw new Error(
-          `SSLCOMMERZ Session API rejected session initiation: ${data?.failedreason || 'Unknown gateway error'}`
-        );
-      }
-
-      gatewayUrl = data.GatewayPageURL;
-    } else {
-      // Development-only local test harness (strictly blocked in staging/production above)
-      gatewayUrl = `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`;
+      return {
+        attemptId: attempt.id,
+        gatewayUrl: existingUrl,
+        idempotencyKey: attempt.idempotencyKey,
+        requiresRedirect: true,
+      };
     }
 
-    const now = new Date().toISOString();
+    const attemptId = attempt.id;
+    const amountTaka = order.totalMinor / 100;
+    let gatewayUrl = '';
 
-    // Ensure order exists in PostgreSQL before recording foreign-keyed payment attempt
-    await persistentDB.saveOrder(order);
+    try {
+      if (hasRealCreds) {
+        const endpoint = this.isSandbox
+          ? 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php'
+          : 'https://securepay.sslcommerz.com/gwprocess/v4/api.php';
+
+        const postParams = new URLSearchParams({
+          store_id: this.storeId,
+          store_passwd: this.storePass,
+          total_amount: amountTaka.toFixed(2),
+          currency: order.currency,
+          tran_id: attemptId,
+          success_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+          fail_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+          cancel_url: `${this.appUrl}/checkout/${order.quoteId}`,
+          ipn_url: `${this.appUrl}/api/checkout/callback/sslcommerz`,
+          shipping_method: 'NO',
+          product_name: order.quoteSnapshot.items[0]?.name || 'Hoooplaaa Setup Service',
+          product_category: 'Digital Marketing Infrastructure',
+          product_profile: 'digital-goods',
+          cus_name: order.quoteSnapshot.businessName || 'Hoooplaaa Client',
+          cus_email: 'billing@hoooplaaa.com',
+          cus_phone: '01700000000',
+          cus_add1: 'Dhaka',
+          cus_city: 'Dhaka',
+          cus_country: 'Bangladesh',
+        });
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: postParams.toString(),
+        });
+
+        if (!response.ok) {
+          throw new Error(`SSLCOMMERZ Session API HTTP error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (!data || data.status !== 'SUCCESS' || !data.GatewayPageURL) {
+          throw new Error(
+            `SSLCOMMERZ Session API rejected session initiation: ${data?.failedreason || 'Unknown gateway error'}`
+          );
+        }
+
+        gatewayUrl = data.GatewayPageURL;
+      } else {
+        // Development-only local test harness (strictly blocked in staging/production above)
+        gatewayUrl = `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`;
+      }
+    } catch (gatewayError) {
+      await persistentDB.recordPaymentAttempt({
+        ...attempt,
+        paymentStatus: 'failed',
+        rejectionReason: 'gateway_session_creation_failed',
+      });
+      throw gatewayError;
+    }
+
     await persistentDB.recordPaymentAttempt({
-      id: attemptId,
-      orderId: order.id,
-      paymentMethod: this.isSandbox ? 'sslcommerz_sandbox' : 'sslcommerz_live',
-      paymentStatus: 'initiated',
-      amountMinor: order.totalMinor,
-      currency: order.currency,
-      idempotencyKey,
+      ...attempt,
       providerSessionKey: attemptId,
-      gatewayRawPayload: { gatewayUrl, initiatedAt: now },
-      createdAt: now,
+      gatewayRawPayload: { ...attempt.gatewayRawPayload, gatewayUrl },
     });
 
     return {
       attemptId,
       gatewayUrl,
-      idempotencyKey,
+      idempotencyKey: attempt.idempotencyKey,
       requiresRedirect: true,
     };
   }
@@ -357,49 +445,10 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Concurrency-safe database idempotency & replay check in PostgreSQL `public.payment_events`
-    const claim = await persistentDB.claimUniquePaymentEvent({
-      eventKey: `sslcommerz:${valId}`,
-      orderId: attempt.orderId,
-      paymentId: attempt.id,
-      provider: 'sslcommerz',
-      providerValId: valId,
-      status: 'verified_paid',
-      amountMinor: verifiedAmountMinor,
-      currency: verifiedCurrency,
-      evidencePayload,
-    });
-
-    if (!claim.claimed) {
-      return {
-        isValid: false,
-        paymentAttemptId: incomingTranId,
-        orderId: attempt.orderId,
-        status: 'verified_failed',
-        amountMinor: 0,
-        currency: 'BDT',
-        reason:
-          claim.reason ||
-          `Duplicate payment event detected: ${valId} has already been processed.`,
-      };
-    }
-
-    await persistentDB.recordPaymentAttempt({
-      id: attempt.id,
-      orderId: attempt.orderId,
-      paymentMethod: this.isSandbox ? 'sslcommerz_sandbox' : 'sslcommerz_live',
-      paymentStatus: 'verified',
-      amountMinor: verifiedAmountMinor,
-      currency: verifiedCurrency,
-      idempotencyKey: attempt.idempotencyKey,
-      providerSessionKey: attempt.id,
-      providerTrxId: incomingTranId,
-      providerValId: valId,
-      verifiedAt: new Date().toISOString(),
-      gatewayRawPayload: evidencePayload,
-      createdAt: attempt.createdAt,
-    });
-
+    // verifyCallback is READ-ONLY. Replay protection, the payment_events row, the payment
+    // status and the order status are written together, atomically, by the settle_order_payment_paid
+    // RPC (a failed settlement therefore leaves nothing half-written and the IPN can safely retry).
+    const providerValidated = Boolean(s2sValidation);
     return {
       isValid: true,
       paymentAttemptId: incomingTranId,
@@ -407,6 +456,18 @@ export class SSLCommerzAdapter implements PaymentProvider {
       status: 'verified_paid',
       amountMinor: verifiedAmountMinor,
       currency: verifiedCurrency,
+      providerValId: valId,
+      settlementSource: providerValidated ? 'sslcommerz_s2s_validated' : 'local_simulator',
+      evidence: {
+        providerValidated,
+        status: verifiedStatus,
+        tranId: verifiedTranId,
+        valId,
+        amountMinor: verifiedAmountMinor,
+        currency: verifiedCurrency,
+        validatedAt: new Date().toISOString(),
+        raw: evidencePayload,
+      },
     };
   }
 }
@@ -421,28 +482,24 @@ export class ManualMFSAdapter implements PaymentProvider {
 
   public async initiatePayment(
     order: Order,
-    idempotencyKey: string
+    idempotencyKey?: string
   ): Promise<PaymentInitiationResult> {
-    const attemptId = `pay_mfs_${crypto.randomBytes(6).toString('hex')}`;
-    const now = new Date().toISOString();
-
-    await persistentDB.saveOrder(order);
-    await persistentDB.recordPaymentAttempt({
-      id: attemptId,
-      orderId: order.id,
+    // The attempt starts as 'initiated'. It only becomes 'pending_verification' once the customer
+    // submits a transaction reference (POST /api/checkout/manual-mfs). Finance can never approve an
+    // attempt that has no submitted reference.
+    const { attempt } = await acquirePaymentAttempt({
+      order,
       paymentMethod: 'manual_mfs',
-      paymentStatus: 'pending_verification',
-      amountMinor: order.totalMinor,
-      currency: order.currency,
-      idempotencyKey,
-      gatewayRawPayload: { initiatedAt: now },
-      createdAt: now,
+      attemptPrefix: 'pay_mfs_',
+      idempotencyKeyHint: idempotencyKey,
+      initialStatus: 'initiated',
+      initialPayload: {},
     });
 
     return {
-      attemptId,
+      attemptId: attempt.id,
       gatewayUrl: `/checkout/status/${order.id}?status=pending_manual_verification`,
-      idempotencyKey,
+      idempotencyKey: attempt.idempotencyKey,
       requiresRedirect: false,
       manualPaymentDetails: {
         instructions:
@@ -454,12 +511,16 @@ export class ManualMFSAdapter implements PaymentProvider {
     };
   }
 
+  /**
+   * Manual MFS settlement is NEVER decided from a request payload. This only reports the attempt
+   * state; approval happens exclusively through POST /api/admin/finance/verify (finance/admin
+   * session), which calls the atomic settlement RPC.
+   */
   public async verifyCallback(
     payload: Record<string, unknown>
   ): Promise<PaymentVerificationResult> {
     const attemptId = payload.attemptId as string;
     const trxRef = payload.transactionReference as string;
-    const financeApproved = payload.financeApproved === true;
 
     if (!attemptId || !trxRef) {
       return {
@@ -486,26 +547,14 @@ export class ManualMFSAdapter implements PaymentProvider {
       };
     }
 
-    // Contractual requirement: Manual MFS CANNOT be marked paid without finance approval!
-    if (!financeApproved) {
-      return {
-        isValid: false,
-        paymentAttemptId: attemptId,
-        orderId: attempt.orderId,
-        status: 'pending',
-        amountMinor: attempt.amountMinor,
-        currency: attempt.currency as Currency,
-        reason: 'Awaiting human finance officer statement verification.',
-      };
-    }
-
     return {
-      isValid: true,
+      isValid: false,
       paymentAttemptId: attemptId,
       orderId: attempt.orderId,
-      status: 'verified_paid',
+      status: 'pending',
       amountMinor: attempt.amountMinor,
       currency: attempt.currency as Currency,
+      reason: 'Awaiting human finance officer statement verification.',
     };
   }
 }

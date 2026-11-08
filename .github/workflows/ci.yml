@@ -33,6 +33,9 @@ jobs:
       - name: TypeScript Strict Verification
         run: npx tsc --noEmit
 
+      - name: ESLint (next lint)
+        run: npm run lint
+
       - name: Run Vitest Suite (Pricing, Order Lifecycle, Payment Security, PostgreSQL 16 RLS)
         run: npm test
 

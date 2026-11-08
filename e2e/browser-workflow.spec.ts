@@ -419,4 +419,73 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
       fullPage: false,
     });
   });
+
+  test('4. Guest quote handoff in a real browser: capability is HttpOnly (never in URL/JS-readable storage), survives sign-in, is single-use', async ({
+    page,
+    context,
+    browser,
+  }) => {
+    await page.goto('/');
+
+    // Guest creates a quote from inside the browser (same-origin fetch, the way the configurator does).
+    const created = await page.evaluate(async () => {
+      const r = await fetch('/api/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessName: 'Browser Guest Coffee',
+          businessProfile: { operatingModel: 'in_person_storefront', hasPhysicalStorefront: true },
+          selectedPlatformSkus: ['HI-SET-META'],
+          selectedAddonSkus: [],
+        }),
+      });
+      return { status: r.status, body: await r.json() };
+    });
+    expect(created.status).toBe(200);
+    const quoteId = created.body.quote.id as string;
+    expect(JSON.stringify(created.body)).not.toMatch(/claimToken|claimTokenHash/);
+
+    // The capability lives only in an HttpOnly cookie: invisible to page JavaScript.
+    const jsVisible = await page.evaluate(() => ({
+      cookie: document.cookie,
+      local: JSON.stringify(Object.entries(localStorage)),
+      session: JSON.stringify(Object.entries(sessionStorage)),
+    }));
+    expect(jsVisible.cookie).not.toContain('hq_gc_');
+    expect(jsVisible.local).not.toMatch(/claim/i);
+    expect(jsVisible.session).not.toMatch(/claim/i);
+    const cookies = await context.cookies();
+    const claimCookie = cookies.find((c) => c.name.startsWith('hq_gc_'))!;
+    expect(claimCookie).toBeDefined();
+    expect(claimCookie.httpOnly).toBe(true);
+    expect(claimCookie.sameSite).toBe('Strict');
+    expect(claimCookie.path).toBe('/api');
+
+    // Checkout page loads the private guest quote ONLY because of the cookie; the URL carries no secret.
+    await page.goto(`/checkout/${quoteId}`);
+    await expect(page.locator('body')).toContainText('Complete Your Order');
+    expect(page.url()).not.toMatch(/claim|token/i);
+    expect(page.url()).toBe(`http://localhost:3456/checkout/${quoteId}`);
+
+    // A different browser profile (no cookie) cannot read the quote by id.
+    const other = await browser.newContext();
+    const otherPage = await other.newPage();
+    const denied = await otherPage.request.get(`http://localhost:3456/api/quote?id=${quoteId}`);
+    expect(denied.status()).toBe(404);
+    await other.close();
+
+    // Sign in on the checkout page and pay via manual MFS: guest -> authenticated handoff keeps the quote.
+    await page.fill('input[type="email"]', 'alice@dhakaheritage.bd');
+    await page.fill('input[type="password"]', 'CustomerA#2026!');
+    await page.click('button:has-text("Sign In & Continue")');
+    await expect(page.locator('body')).toContainText(/alice|Dhaka Heritage|Signed in|Authenticated/i);
+    await page.click('text=Manual MFS / Bank Transfer Reference');
+    await page.click('button:has-text("Proceed to Reference Submission")');
+    await expect(page.locator('body')).toContainText('Submit Payment Reference');
+
+    // The capability cookie was consumed and cleared by the server (single use).
+    const after = (await context.cookies()).find((c) => c.name.startsWith('hq_gc_') && c.value !== '');
+    expect(after).toBeUndefined();
+    await page.screenshot({ path: path.join(screenshotDir, '08-guest-handoff-checkout.png'), fullPage: false });
+  });
 });

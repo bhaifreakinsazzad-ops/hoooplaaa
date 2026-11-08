@@ -30,14 +30,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const valId = (payload.val_id as string) || '';
-
-    // Atomic synchronization: transitions order to paid and payment record to verified
+    // ONE atomic financial truth: replay-protection event, payment verification, order status and SLA
+    // are written together by the settlement RPC. verifyCallback above wrote nothing, so a failure here
+    // leaves no half-settled state and provider retries (IPN) can safely re-enter.
     const settled = await persistentDB.settleOrderPaymentPaid({
       orderId: verification.orderId,
       paymentAttemptId: verification.paymentAttemptId,
-      providerValId: valId,
-      evidencePayload: payload,
+      source: verification.settlementSource || 'sslcommerz_s2s_validated',
+      providerValId: verification.providerValId,
+      evidencePayload: verification.evidence || {},
     });
 
     return NextResponse.json({
