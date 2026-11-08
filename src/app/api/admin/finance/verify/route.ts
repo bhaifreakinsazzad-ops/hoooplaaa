@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
-import { OrderService } from '@/domain/order-service';
 import { requireRole } from '@/domain/auth-guard';
 
 /**
@@ -33,33 +32,21 @@ export async function POST(req: NextRequest) {
     const now = new Date().toISOString();
 
     if (approved) {
-      const updated = OrderService.markOrderPaid(
-        order,
-        `FIN-VERIFIED-${verifiedByStaffId.slice(0, 8)}-${Date.now()}`
-      );
-      await persistentDB.saveOrder(updated, order.organizationId);
-
-      // Update associated manual payment record in database
       const payments = await persistentDB.getPaymentsForOrder(orderId);
-      if (payments.length > 0) {
-        const latest = payments[0];
-        await persistentDB.recordPaymentAttempt({
-          ...latest,
-          paymentStatus: 'verified',
-          verifiedByFinanceId: verifiedByStaffId,
-          verifiedAt: now,
-        });
-      }
+      const latestPaymentId =
+        payments.length > 0
+          ? payments[0].id
+          : `pay_mfs_${verifiedByStaffId.slice(0, 8)}_${Date.now()}`;
 
-      await persistentDB.recordAuditLog({
-        actorId: verifiedByStaffId,
-        actorRole: auth.user.role,
-        action: 'FINANCE_PAYMENT_APPROVED',
-        entityType: 'order',
-        entityId: orderId,
-        metadata: {
-          verifiedByEmail: auth.user.email,
-          amountMinor: order.totalMinor,
+      // Atomic payment settlement: updates order to paid, payment to verified, and logs audit
+      const settled = await persistentDB.settleOrderPaymentPaid({
+        orderId,
+        paymentAttemptId: latestPaymentId,
+        verifiedByStaffId,
+        evidencePayload: {
+          approvedByStaffId: verifiedByStaffId,
+          approvedByEmail: auth.user.email,
+          verifiedAt: now,
         },
       });
 
@@ -67,7 +54,7 @@ export async function POST(req: NextRequest) {
         success: true,
         message: 'Payment officially verified by finance. Order marked as paid.',
         verifiedByStaffId,
-        order: updated,
+        order: settled.order,
       });
     } else {
       const updated = {

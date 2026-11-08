@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
 import { SSLCommerzAdapter } from '@/domain/payment-adapter';
-import { OrderService } from '@/domain/order-service';
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,24 +30,23 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const order = await persistentDB.getOrder(verification.orderId);
-    if (!order) {
-      return NextResponse.json(
-        { success: false, error: 'Order not found for verified payment.' },
-        { status: 404 }
-      );
-    }
+    const valId = (payload.val_id as string) || '';
 
-    const updatedOrder = OrderService.markOrderPaid(order, verification.paymentAttemptId);
-    await persistentDB.saveOrder(updatedOrder, order.organizationId);
+    // Atomic synchronization: transitions order to paid and payment record to verified
+    const settled = await persistentDB.settleOrderPaymentPaid({
+      orderId: verification.orderId,
+      paymentAttemptId: verification.paymentAttemptId,
+      providerValId: valId,
+      evidencePayload: payload,
+    });
 
     return NextResponse.json({
       success: true,
       message: 'Payment verified and order updated to paid.',
-      orderId: updatedOrder.id,
-      orderNumber: updatedOrder.orderNumber,
-      status: updatedOrder.status,
-      financialStatus: updatedOrder.financialStatus,
+      orderId: settled.order.id,
+      orderNumber: settled.order.orderNumber,
+      status: settled.order.status,
+      financialStatus: settled.order.financialStatus,
     });
   } catch (error: any) {
     return NextResponse.json(

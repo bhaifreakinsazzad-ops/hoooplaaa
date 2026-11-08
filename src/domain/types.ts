@@ -115,6 +115,8 @@ export interface QuoteSnapshot {
   eligibility: EligibilityEvaluation;
   status: 'draft' | 'priced' | 'accepted' | 'expired' | 'requires_manual_scope';
   clientIp?: string;
+  customerId?: string;
+  organizationId?: string;
 }
 
 export type OrderStatus =

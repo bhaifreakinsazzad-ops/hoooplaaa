@@ -25,6 +25,7 @@ import {
   AuditLogEntry,
   UserRole,
 } from './types';
+import { OrderService } from './order-service';
 import {
   supabasePgliteFetch,
   resetTestPostgresData,
@@ -149,16 +150,22 @@ class PersistentDatabaseEngine {
     const isInvalidAnonKey =
       !anonKey || anonKey.includes('placeholder') || anonKey === 'your-anon-key';
 
-    if (isInvalidServiceKey && isInvalidAnonKey) {
+    if (isInvalidServiceKey) {
       throw new Error(
-        'SupabaseConfigurationError: Authoritative Supabase credentials (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY) are required. Local fallback storage is strictly disabled.'
+        'SupabaseConfigurationError: SUPABASE_SERVICE_ROLE_KEY is required for privileged server database operations. Substituting the public anonymous key is strictly prohibited.'
+      );
+    }
+
+    if (isInvalidAnonKey) {
+      throw new Error(
+        'SupabaseConfigurationError: NEXT_PUBLIC_SUPABASE_ANON_KEY is required for client authentication operations.'
       );
     }
 
     return {
       supabaseUrl,
-      serviceRoleKey: isInvalidServiceKey ? anonKey : serviceRoleKey,
-      anonKey: isInvalidAnonKey ? serviceRoleKey : anonKey,
+      serviceRoleKey,
+      anonKey,
       isTestBridge: false,
     };
   }
@@ -424,7 +431,7 @@ class PersistentDatabaseEngine {
 
     const { data, error } = await supabase
       .from('quotes')
-      .select('payload_json')
+      .select('payload_json, organization_id, customer_id')
       .or(`quote_code.eq.${quoteId},id.eq.${quoteUuid}`);
 
     if (error) {
@@ -433,9 +440,15 @@ class PersistentDatabaseEngine {
 
     const row = data?.[0];
     if (!row?.payload_json) return undefined;
-    return (typeof row.payload_json === 'string'
+    const parsed = (typeof row.payload_json === 'string'
       ? JSON.parse(row.payload_json)
       : row.payload_json) as QuoteSnapshot;
+
+    return {
+      ...parsed,
+      customerId: row.customer_id || (parsed as any).customerId,
+      organizationId: row.organization_id || (parsed as any).organizationId,
+    };
   }
 
   // ============================================================================
@@ -572,6 +585,97 @@ class PersistentDatabaseEngine {
 
   public async getAllOrders(): Promise<Order[]> {
     return this.listAllOrders();
+  }
+
+  public async findActiveOrderByQuoteId(quoteId: string, customerId?: string): Promise<Order | undefined> {
+    const orders = await this.listAllOrders();
+    return orders.find(
+      (o) =>
+        (o.quoteId === quoteId || o.quoteSnapshot?.id === quoteId) &&
+        (!customerId || o.customerUserId === customerId) &&
+        o.status !== 'cancelled' &&
+        o.status !== 'refunded'
+    );
+  }
+
+  /**
+   * Atomic Payment & Order Settlement:
+   * Synchronizes the payment record update to 'verified' and the order financial_status to 'paid'.
+   * If intake was already submitted, begins official SLA countdown immediately.
+   */
+  public async settleOrderPaymentPaid(params: {
+    orderId: string;
+    paymentAttemptId: string;
+    verifiedByStaffId?: string;
+    providerValId?: string;
+    evidencePayload?: Record<string, unknown>;
+  }): Promise<{ order: Order; payment: DbPaymentRecord }> {
+    const order = await this.getOrder(params.orderId);
+    if (!order) throw new Error(`Order ${params.orderId} not found for settlement.`);
+
+    const now = new Date().toISOString();
+    const updatedOrder = OrderService.markOrderPaid(order, params.paymentAttemptId);
+
+    // Check if intake already completed before payment verification
+    const intake = await this.getIntake(params.orderId);
+    if (intake && intake.isComplete) {
+      updatedOrder.intakeStatus = 'completed';
+      updatedOrder.status = 'ready_for_fulfillment';
+      updatedOrder.slaStartedAt = now;
+      const targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + 3);
+      updatedOrder.deliveryTargetDate = targetDate.toISOString();
+    }
+
+    await this.saveOrder(updatedOrder, order.organizationId);
+
+    // Update payment record
+    const payment = await this.getPaymentByAttemptId(params.paymentAttemptId);
+    let updatedPayment: DbPaymentRecord;
+    if (payment) {
+      updatedPayment = await this.recordPaymentAttempt({
+        ...payment,
+        paymentStatus: 'verified',
+        verifiedByFinanceId: params.verifiedByStaffId || payment.verifiedByFinanceId,
+        providerValId: params.providerValId || payment.providerValId,
+        verifiedAt: now,
+        gatewayRawPayload: {
+          ...payment.gatewayRawPayload,
+          ...(params.evidencePayload || {}),
+        },
+      });
+    } else {
+      updatedPayment = await this.recordPaymentAttempt({
+        id: params.paymentAttemptId,
+        orderId: order.id,
+        paymentMethod: 'sslcommerz',
+        paymentStatus: 'verified',
+        amountMinor: order.totalMinor,
+        currency: order.currency,
+        idempotencyKey: `idemp_${params.paymentAttemptId}`,
+        providerValId: params.providerValId,
+        verifiedByFinanceId: params.verifiedByStaffId,
+        verifiedAt: now,
+        gatewayRawPayload: params.evidencePayload || {},
+        createdAt: now,
+      });
+    }
+
+    await this.recordAuditLog({
+      actorId: params.verifiedByStaffId || order.customerUserId,
+      actorRole: params.verifiedByStaffId ? 'finance' : 'customer',
+      action: 'PAYMENT_SETTLED_ORDER_PAID',
+      entityType: 'order',
+      entityId: order.id,
+      metadata: {
+        paymentAttemptId: params.paymentAttemptId,
+        amountMinor: order.totalMinor,
+        financialStatus: updatedOrder.financialStatus,
+        orderStatus: updatedOrder.status,
+      },
+    });
+
+    return { order: updatedOrder, payment: updatedPayment };
   }
 
   public async listOrdersForCustomer(
