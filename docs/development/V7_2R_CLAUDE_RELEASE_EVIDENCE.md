@@ -56,3 +56,9 @@ Test layers: unit; PGlite PostgreSQL 16 with real `anon/authenticated/service_ro
 2. Provide an authorized, empty **staging** Supabase project (Supabase CLI login or a connector) — apply the three migrations in order; run `has_function_privilege` checks.
 3. Authorize a Vercel scope/project; set `APP_ENV=staging`, Supabase URL/anon key (public) and service key (server-only), SSLCOMMERZ sandbox store credentials; keep `SUPABASE_TEST_BRIDGE` unset.
 4. Decide the Bangladesh weekend/holiday policy and set `BUSINESS_CALENDAR_APPROVED=true` (and update `business_calendar_policy`).
+
+## Git (gate 14) — BLOCKED
+- Local commit `73fbad3` (V7.2R) on top of `13b1255`. Remote `origin/feature/phase-6-10-production-platform` is still `6478c43` (checked with `git ls-remote`).
+- `git push` (non-interactive, 60 s bound) timed out with exit 124: Git Credential Manager is configured but no usable cached GitHub credential; `gh` is not installed. Nothing was force-pushed. PR #2 and CI are therefore NOT updated.
+- Work preserved as `E:\Agentic Work Station\Web Applications\hoooplaaa-v7-2r.bundle` (`6478c43..HEAD`).
+- Action: run `git push origin feature/phase-6-10-production-platform` in a terminal and complete the GitHub browser sign-in, then check the CI run on PR #2.
