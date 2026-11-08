@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { calculateServerQuote } from '../src/domain/pricing-engine';
 import { OrderService } from '../src/domain/order-service';
+import { persistentDB } from '../src/domain/persistent-db';
 import {
   PaymentLedger,
   SSLCommerzAdapter,
@@ -37,15 +38,35 @@ describe('Order, Payment, File & Security Matrix Tests (P0 Deterministic Tests 1
       currency: 'BDT',
     };
 
-    // First attempt: valid
+    // verifyCallback is READ-ONLY: it validates and returns evidence, it writes nothing.
     const firstVerification = await adapter.verifyCallback(ipnPayload);
     expect(firstVerification.isValid).toBe(true);
     expect(firstVerification.status).toBe('verified_paid');
+    const beforeSettle = (await persistentDB.getPaymentsForOrder(order.id))[0];
+    expect(beforeSettle.paymentStatus).toBe('initiated'); // nothing was half-written
 
-    // Duplicate replay attempt with same val_id: must be rejected
+    const settleArgs = {
+      orderId: order.id,
+      paymentAttemptId: init.attemptId,
+      source: firstVerification.settlementSource!,
+      providerValId: firstVerification.providerValId,
+      evidencePayload: firstVerification.evidence,
+    };
+    const settled = await persistentDB.settleOrderPaymentPaid(settleArgs);
+    expect(settled.order.financialStatus).toBe('paid');
+
+    // Duplicate replay of the same IPN: validated again, settlement is idempotent, ONE event row only.
     const replayVerification = await adapter.verifyCallback(ipnPayload);
-    expect(replayVerification.isValid).toBe(false);
-    expect(replayVerification.reason).toContain('Duplicate payment event detected');
+    expect(replayVerification.isValid).toBe(true);
+    const replaySettle = await persistentDB.settleOrderPaymentPaid(settleArgs);
+    expect(replaySettle.order.financialStatus).toBe('paid');
+
+    const events = await persistentDB
+      .getSupabaseAdminClient()
+      .from('payment_events')
+      .select('event_key')
+      .eq('provider_val_id', 'SSL-VAL-SUCCESS-999');
+    expect(events.data?.length).toBe(1);
   });
 
   // Test 11: Payment success redirect forged without provider verification
@@ -104,11 +125,11 @@ describe('Order, Payment, File & Security Matrix Tests (P0 Deterministic Tests 1
       attemptId: init.attemptId,
       transactionReference: 'TRX-BKASH-888',
       customerPhone: '01811112222',
-      financeApproved: true,
+      financeApproved: true, // A request payload flag can NEVER approve a manual payment
     });
 
-    expect(financeApproval.isValid).toBe(true);
-    expect(financeApproval.status).toBe('verified_paid');
+    expect(financeApproval.isValid).toBe(false);
+    expect(financeApproval.status).toBe('pending');
   });
 
   // Test 13: Cross-tenant RLS isolation

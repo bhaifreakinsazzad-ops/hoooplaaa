@@ -3,6 +3,11 @@ import { persistentDB } from '@/domain/persistent-db';
 import { OrderService } from '@/domain/order-service';
 import { SSLCommerzAdapter, ManualMFSAdapter } from '@/domain/payment-adapter';
 import { authenticateRequest, requireOrderAccess } from '@/domain/auth-guard';
+import {
+  clearGuestClaimCookie,
+  readGuestClaimToken,
+  rejectCrossOrigin,
+} from '@/domain/guest-claim';
 
 /**
  * POST /api/checkout/initiate
@@ -11,6 +16,10 @@ import { authenticateRequest, requireOrderAccess } from '@/domain/auth-guard';
  * Enforces quote validity, expiration checks, quote ownership, and checkout idempotency.
  */
 export async function POST(req: NextRequest) {
+  // CSRF / origin protection: this endpoint is authenticated by cookie and changes state.
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   const auth = await authenticateRequest(req);
   if (!auth.authenticated) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
@@ -26,6 +35,13 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    let claimedGuestQuote = false;
+    const respond = (payload: unknown, status = 200) => {
+      const res = NextResponse.json(payload, { status, headers: { 'Cache-Control': 'no-store, private' } });
+      if (claimedGuestQuote) clearGuestClaimCookie(res, req, quoteId);
+      return res;
+    };
 
     const quote = await persistentDB.getQuote(quoteId);
     if (!quote) {
@@ -43,7 +59,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Enforce Quote Ownership Check
+    // 2. Enforce Quote Ownership & Single-Use Capability Claim Check
     const quoteCustomerId = (quote as any).customerId;
     const quoteOrgId = (quote as any).organizationId;
     if (quoteCustomerId || quoteOrgId) {
@@ -70,8 +86,18 @@ export async function POST(req: NextRequest) {
         );
       }
     } else {
-      // Quote was created by guest; single-use, concurrency-safe claiming for this customer
-      await persistentDB.claimGuestQuote(quote.id, auth.user.id, auth.user.organizationId);
+      // Quote was created by a guest: single-use claim, authorised ONLY by the HttpOnly capability
+      // cookie set on the creating browser (never by URL, body or storage). One successful claim.
+      const claimToken = readGuestClaimToken(req, quote.id);
+      try {
+        await persistentDB.claimGuestQuote(quote.id, auth.user.id, auth.user.organizationId, claimToken);
+        claimedGuestQuote = true;
+      } catch {
+        return NextResponse.json(
+          { error: 'This guest quote can no longer be claimed from this browser. Please configure a new quote.' },
+          { status: 403 }
+        );
+      }
     }
 
     if (!quote.eligibility.canSelfCheckout) {
@@ -90,7 +116,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (order.financialStatus === 'paid') {
-      return NextResponse.json({
+      return respond({
         success: true,
         alreadyPaid: true,
         message: 'This order is already paid.',
@@ -100,12 +126,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const idempotencyKey = `idemp_${order.id}_${Date.now()}`;
+    // Stable logical payment session: the adapters re-use the order's open attempt for this method
+    // (DB-enforced) instead of generating a fresh gateway attempt per request.
 
     if (paymentMethod === 'sslcommerz') {
       const sslAdapter = new SSLCommerzAdapter();
-      const initResult = await sslAdapter.initiatePayment(order, idempotencyKey);
-      return NextResponse.json({
+      const initResult = await sslAdapter.initiatePayment(order);
+      return respond({
         success: true,
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -114,8 +141,8 @@ export async function POST(req: NextRequest) {
       });
     } else if (paymentMethod === 'manual_mfs') {
       const mfsAdapter = new ManualMFSAdapter();
-      const initResult = await mfsAdapter.initiatePayment(order, idempotencyKey);
-      return NextResponse.json({
+      const initResult = await mfsAdapter.initiatePayment(order);
+      return respond({
         success: true,
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -123,7 +150,7 @@ export async function POST(req: NextRequest) {
         manualDetails: initResult.manualPaymentDetails,
       });
     } else {
-      return NextResponse.json({ error: 'Unsupported payment method.' }, { status: 400 });
+      return respond({ error: 'Unsupported payment method.' }, 400);
     }
   } catch (error: any) {
     return NextResponse.json(

@@ -2,6 +2,18 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { persistentDB } from '../src/domain/persistent-db';
 import { calculateServerQuote } from '../src/domain/pricing-engine';
 import { resetTestPostgresData } from '../src/testing/supabase-pglite-bridge';
+import { hashGuestClaimToken } from '../src/domain/guest-claim';
+
+function sslEvidence(attemptId: string, valId: string, amountMinor: number) {
+  return {
+    providerValidated: true,
+    status: 'VALID',
+    tranId: attemptId,
+    valId,
+    amountMinor,
+    currency: 'BDT',
+  };
+}
 
 describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', () => {
   const ORG_ALPHA = '10000000-0000-4000-a000-000000000001';
@@ -88,9 +100,9 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
     const settlement = await persistentDB.settleOrderPaymentPaid({
       orderId: order.id,
       paymentAttemptId,
-      verifiedByStaffId: STAFF_ID,
+      source: 'sslcommerz_s2s_validated',
       providerValId: 'SSL-VAL-ATOMIC-123',
-      evidencePayload: { bankTranId: 'BANK-TRX-777' },
+      evidencePayload: sslEvidence(paymentAttemptId, 'SSL-VAL-ATOMIC-123', order.totalMinor),
     });
 
     expect(settlement.order.financialStatus).toBe('paid');
@@ -144,6 +156,9 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
       persistentDB.settleOrderPaymentPaid({
         orderId: order.id,
         paymentAttemptId: tamperedAttemptId,
+        source: 'sslcommerz_s2s_validated',
+        providerValId: 'SSL-VAL-TAMPER',
+        evidencePayload: sslEvidence(tamperedAttemptId, 'SSL-VAL-TAMPER', 100000),
       })
     ).rejects.toThrow(/mismatch/i);
 
@@ -188,17 +203,19 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
     });
 
     // 1st settlement: succeeds
-    const firstSettlement = await persistentDB.settleOrderPaymentPaid({
-      orderId: order.id,
-      paymentAttemptId: firstPaymentId,
-    });
+    const settleFirst = () =>
+      persistentDB.settleOrderPaymentPaid({
+        orderId: order.id,
+        paymentAttemptId: firstPaymentId,
+        source: 'sslcommerz_s2s_validated',
+        providerValId: 'SSL-VAL-REPLAY-1',
+        evidencePayload: sslEvidence(firstPaymentId, 'SSL-VAL-REPLAY-1', order.totalMinor),
+      });
+    const firstSettlement = await settleFirst();
     expect(firstSettlement.order.financialStatus).toBe('paid');
 
     // 2nd settlement callback with SAME payment: returns idempotent success
-    const secondSettlement = await persistentDB.settleOrderPaymentPaid({
-      orderId: order.id,
-      paymentAttemptId: firstPaymentId,
-    });
+    const secondSettlement = await settleFirst();
     expect(secondSettlement.order.financialStatus).toBe('paid');
 
     // 3rd settlement attempt with DIFFERENT payment: rejected because order is already settled
@@ -219,6 +236,9 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
       persistentDB.settleOrderPaymentPaid({
         orderId: order.id,
         paymentAttemptId: secondPaymentId,
+        source: 'sslcommerz_s2s_validated',
+        providerValId: 'SSL-VAL-REPLAY-2',
+        evidencePayload: sslEvidence(secondPaymentId, 'SSL-VAL-REPLAY-2', order.totalMinor),
       })
     ).rejects.toThrow(/already been settled/i);
   });
@@ -246,6 +266,7 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
       persistentDB.settleOrderPaymentPaid({
         orderId: order.id,
         paymentAttemptId: 'fictional_non_existent_payment_id',
+        source: 'finance_manual',
         verifiedByStaffId: STAFF_ID,
       })
     ).rejects.toThrow(/not found/i);
@@ -265,13 +286,18 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
       selectedPlatformSkus: ['HI-SET-META'],
       selectedAddonSkus: [],
     });
-    const savedGuestQuote = await persistentDB.saveQuote(guestQuote);
+    const guestToken = 'tx6-guest-capability-token-0123456789abcdef0123456789abcdef';
+    const savedGuestQuote = await persistentDB.saveQuote(guestQuote, undefined, undefined, {
+      tokenHash: hashGuestClaimToken(guestToken),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
 
-    // 2. Customer A claims the quote
+    // 2. Customer A claims the quote with the capability held by the creating browser
     const claimedByA = await persistentDB.claimGuestQuote(
       savedGuestQuote.id,
       CUSTOMER_A,
-      ORG_ALPHA
+      ORG_ALPHA,
+      guestToken
     );
     expect(claimedByA.customerId).toBe(CUSTOMER_A);
 
@@ -280,7 +306,8 @@ describe('V7.1 PostgreSQL Transactional Integrity & Concurrency Control Suite', 
       persistentDB.claimGuestQuote(
         savedGuestQuote.id,
         CUSTOMER_B,
-        ORG_BETA
+        ORG_BETA,
+        guestToken
       )
     ).rejects.toThrow(/Cross-tenant violation/i);
   });

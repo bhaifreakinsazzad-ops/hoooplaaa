@@ -30,35 +30,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: access.error }, { status: access.status });
     }
 
+    if (order.financialStatus === 'paid') {
+      return NextResponse.json({ error: 'This order is already paid.' }, { status: 409 });
+    }
+
+    // The reference can only be attached to an existing MANUAL attempt that the customer opened through
+    // checkout. No payment records are invented here and a gateway attempt can never be re-labelled.
+    const existingPayments = await persistentDB.getPaymentsForOrder(orderId);
+    const manualAttempt = existingPayments.find(
+      (p) =>
+        p.paymentMethod === 'manual_mfs' &&
+        (p.paymentStatus === 'initiated' || p.paymentStatus === 'pending_verification')
+    );
+    if (!manualAttempt) {
+      return NextResponse.json(
+        { error: 'No open manual payment attempt exists for this order. Start a manual payment from checkout first.' },
+        { status: 409 }
+      );
+    }
+
     // Update order status to payment_under_review (never paid automatically)
     const updated = OrderService.markOrderPaymentUnderReview(order, transactionReference);
     await persistentDB.saveOrder(updated, order.organizationId);
 
-    // Update payment attempt in database with customer sender phone and trx reference
-    const existingPayments = await persistentDB.getPaymentsForOrder(orderId);
-    if (existingPayments.length > 0) {
-      const latest = existingPayments[0];
-      await persistentDB.recordPaymentAttempt({
-        ...latest,
-        paymentStatus: 'pending_verification',
-        manualSenderPhone: customerPhone || '',
-        manualTrxReference: transactionReference,
-      });
-    } else {
-      await persistentDB.recordPaymentAttempt({
-        id: `pay_mfs_${Date.now()}`,
-        orderId,
-        paymentMethod: 'manual_mfs',
-        paymentStatus: 'pending_verification',
-        amountMinor: order.totalMinor,
-        currency: order.currency,
-        idempotencyKey: `idemp_mfs_${orderId}_${transactionReference}`,
-        manualSenderPhone: customerPhone || '',
-        manualTrxReference: transactionReference,
-        gatewayRawPayload: { submittedBy: access.user.id },
-        createdAt: new Date().toISOString(),
-      });
-    }
+    await persistentDB.recordPaymentAttempt({
+      ...manualAttempt,
+      paymentStatus: 'pending_verification',
+      manualSenderPhone: customerPhone || '',
+      manualTrxReference: String(transactionReference).trim(),
+      gatewayRawPayload: { ...manualAttempt.gatewayRawPayload, submittedBy: access.user.id },
+    });
 
     return NextResponse.json({
       success: true,

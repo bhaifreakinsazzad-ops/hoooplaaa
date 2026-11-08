@@ -33,15 +33,21 @@ export async function POST(req: NextRequest) {
 
     // Priority 2: Enforce actual settlement evidence — prohibit fictional payment generation
     const payments = await persistentDB.getPaymentsForOrder(orderId);
+    // Only a MANUAL attempt that the customer has submitted a transaction reference for can be approved or
+    // rejected here. Gateway (SSLCOMMERZ) attempts settle exclusively through provider server-to-server
+    // validation; they can never be approved by hand.
     const pendingPayment = payments.find(
-      (p) => p.paymentStatus === 'pending_verification' || p.paymentStatus === 'initiated'
+      (p) =>
+        p.paymentMethod === 'manual_mfs' &&
+        p.paymentStatus === 'pending_verification' &&
+        Boolean(p.manualTrxReference && p.manualTrxReference.trim())
     );
 
     if (!pendingPayment) {
       return NextResponse.json(
         {
           error:
-            'Unprocessable Entity: No matching pending payment attempt found for this order. Finance verification requires an existing pending payment record.',
+            'Unprocessable Entity: No pending manual payment with a submitted transaction reference exists for this order. Finance verification requires real pending settlement evidence.',
         },
         { status: 422 }
       );
@@ -52,6 +58,7 @@ export async function POST(req: NextRequest) {
       const settled = await persistentDB.settleOrderPaymentPaid({
         orderId,
         paymentAttemptId: pendingPayment.id,
+        source: 'finance_manual',
         verifiedByStaffId,
         evidencePayload: {
           approvedByStaffId: verifiedByStaffId,

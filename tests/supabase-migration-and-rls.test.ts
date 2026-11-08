@@ -45,6 +45,11 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)'
         SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
       $$ LANGUAGE sql STABLE;
 
+      CREATE OR REPLACE FUNCTION auth.role()
+      RETURNS TEXT AS $$
+        SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon')::TEXT;
+      $$ LANGUAGE sql STABLE;
+
       CREATE SCHEMA IF NOT EXISTS storage;
       CREATE TABLE IF NOT EXISTS storage.buckets (
         id TEXT PRIMARY KEY,
@@ -111,7 +116,8 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)'
 
   it('1. Ensures canonical SQL migration does NOT override Supabase auth.users, auth.uid(), or roles, and seeds 7 SKUs cleanly', async () => {
     const files = fs.readdirSync(migrationDir).filter((f) => f.endsWith('.sql'));
-    expect(files).toEqual(['20261108000000_canonical_production_schema_v5.sql']);
+    expect(files).toContain('20261108000000_canonical_production_schema_v5.sql');
+    expect(files).toContain('20261109000000_security_rpc_pricing_sla_v7_2.sql');
 
     expect(migrationSql).not.toMatch(/CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+auth/i);
     expect(migrationSql).not.toMatch(/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+auth\.users/i);
@@ -134,8 +140,7 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)'
   it('2. Enforces PostgreSQL RLS: Customer A can create and read their own order, intake, and payment', async () => {
     await pg.exec(`
       BEGIN;
-      SET LOCAL ROLE authenticated;
-      SELECT set_config('request.jwt.claim.sub', '${CUSTOMER_A}', true);
+      SET LOCAL ROLE service_role;
 
       INSERT INTO public.orders (
         id, order_code, order_number, organization_id, customer_id, quote_id,
@@ -151,6 +156,9 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)'
         '${PAYMENT_A}', 'pay_mfs_001', '${ORDER_A}', 'manual_mfs', 'pending_verification', 300000, 'idemp_pg_1', 'BKASH998877'
       );
 
+      SET LOCAL ROLE authenticated;
+      SELECT set_config('request.jwt.claim.sub', '${CUSTOMER_A}', true);
+
       INSERT INTO public.order_intakes (
         order_id, submitted_by, business_name, contact_email, contact_whatsapp,
         target_audience, partner_invite_status, payload_json
@@ -161,9 +169,14 @@ describe('PostgreSQL 16 Canonical Migration & Engine-Level RLS Enforcement (V6)'
       COMMIT;
     `);
 
+    // Customer A under authenticated role can read their own order
+    await pg.exec('BEGIN;');
+    await pg.exec('SET LOCAL ROLE authenticated;');
+    await pg.exec(`SELECT set_config('request.jwt.claim.sub', '${CUSTOMER_A}', true);`);
     const checkRes = await pg.query<{ id: string }>(
       `SELECT id FROM public.orders WHERE id = '${ORDER_A}'`
     );
+    await pg.exec('COMMIT;');
     expect(checkRes.rows.length).toBe(1);
   });
 
