@@ -599,9 +599,10 @@ class PersistentDatabaseEngine {
   }
 
   /**
-   * Atomic Payment & Order Settlement:
-   * Synchronizes the payment record update to 'verified' and the order financial_status to 'paid'.
-   * If intake was already submitted, begins official SLA countdown immediately.
+   * Genuine PostgreSQL Transactional Payment & Order Settlement:
+   * Invokes the PostgreSQL stored procedure `settle_order_payment_paid`.
+   * Guarantees all updates (orders, payments, audit logs, and SLA triggers) succeed together or roll back.
+   * Validates amounts and currencies, enforces replay protection, and eliminates fictional payment fallback.
    */
   public async settleOrderPaymentPaid(params: {
     orderId: string;
@@ -610,72 +611,114 @@ class PersistentDatabaseEngine {
     providerValId?: string;
     evidencePayload?: Record<string, unknown>;
   }): Promise<{ order: Order; payment: DbPaymentRecord }> {
-    const order = await this.getOrder(params.orderId);
-    if (!order) throw new Error(`Order ${params.orderId} not found for settlement.`);
+    const supabase = this.getSupabaseAdminClient();
 
-    const now = new Date().toISOString();
-    const updatedOrder = OrderService.markOrderPaid(order, params.paymentAttemptId);
-
-    // Check if intake already completed before payment verification
-    const intake = await this.getIntake(params.orderId);
-    if (intake && intake.isComplete) {
-      updatedOrder.intakeStatus = 'completed';
-      updatedOrder.status = 'ready_for_fulfillment';
-      updatedOrder.slaStartedAt = now;
-      const targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + 3);
-      updatedOrder.deliveryTargetDate = targetDate.toISOString();
-    }
-
-    await this.saveOrder(updatedOrder, order.organizationId);
-
-    // Update payment record
-    const payment = await this.getPaymentByAttemptId(params.paymentAttemptId);
-    let updatedPayment: DbPaymentRecord;
-    if (payment) {
-      updatedPayment = await this.recordPaymentAttempt({
-        ...payment,
-        paymentStatus: 'verified',
-        verifiedByFinanceId: params.verifiedByStaffId || payment.verifiedByFinanceId,
-        providerValId: params.providerValId || payment.providerValId,
-        verifiedAt: now,
-        gatewayRawPayload: {
-          ...payment.gatewayRawPayload,
-          ...(params.evidencePayload || {}),
-        },
-      });
-    } else {
-      updatedPayment = await this.recordPaymentAttempt({
-        id: params.paymentAttemptId,
-        orderId: order.id,
-        paymentMethod: 'sslcommerz',
-        paymentStatus: 'verified',
-        amountMinor: order.totalMinor,
-        currency: order.currency,
-        idempotencyKey: `idemp_${params.paymentAttemptId}`,
-        providerValId: params.providerValId,
-        verifiedByFinanceId: params.verifiedByStaffId,
-        verifiedAt: now,
-        gatewayRawPayload: params.evidencePayload || {},
-        createdAt: now,
-      });
-    }
-
-    await this.recordAuditLog({
-      actorId: params.verifiedByStaffId || order.customerUserId,
-      actorRole: params.verifiedByStaffId ? 'finance' : 'customer',
-      action: 'PAYMENT_SETTLED_ORDER_PAID',
-      entityType: 'order',
-      entityId: order.id,
-      metadata: {
-        paymentAttemptId: params.paymentAttemptId,
-        amountMinor: order.totalMinor,
-        financialStatus: updatedOrder.financialStatus,
-        orderStatus: updatedOrder.status,
-      },
+    const { data, error } = await supabase.rpc('settle_order_payment_paid', {
+      p_order_id: params.orderId,
+      p_payment_attempt_code: params.paymentAttemptId,
+      p_staff_id: params.verifiedByStaffId || null,
+      p_provider_val_id: params.providerValId || null,
+      p_evidence_payload: params.evidencePayload || {},
     });
 
-    return { order: updatedOrder, payment: updatedPayment };
+    if (error) {
+      throw new Error(`PaymentSettlementError: ${error.message}`);
+    }
+
+    if (!data?.order || !data?.payment) {
+      throw new Error(
+        'PaymentSettlementError: Settlement transaction did not return expected order or payment records.'
+      );
+    }
+
+    const order = (typeof data.order === 'string' ? JSON.parse(data.order) : data.order) as Order;
+    const rawPayment = typeof data.payment === 'string' ? JSON.parse(data.payment) : data.payment;
+    const payment: DbPaymentRecord = {
+      id: rawPayment.attempt_code || rawPayment.id,
+      orderId: params.orderId,
+      paymentMethod: rawPayment.payment_method || rawPayment.paymentMethod,
+      paymentStatus: rawPayment.payment_status || rawPayment.paymentStatus,
+      amountMinor: Number(rawPayment.amount_minor || rawPayment.amountMinor),
+      currency: rawPayment.currency,
+      idempotencyKey: rawPayment.idempotency_key || rawPayment.idempotencyKey,
+      providerValId: rawPayment.provider_val_id || rawPayment.providerValId,
+      verifiedByFinanceId: rawPayment.verified_by_finance_id || rawPayment.verifiedByFinanceId,
+      verifiedAt: rawPayment.verified_at || rawPayment.verifiedAt,
+      gatewayRawPayload: rawPayment.gateway_raw_payload || rawPayment.gatewayRawPayload || {},
+      createdAt: rawPayment.created_at || rawPayment.createdAt,
+    };
+
+    return { order, payment };
+  }
+
+  /**
+   * Concurrency-Safe Transactional Quote-to-Order Conversion:
+   * Guarantees exactly one active order can be generated for a quote snapshot.
+   * Catches unique constraints in PostgreSQL and returns the active order without duplicating records.
+   */
+  public async createOrGetActiveOrderForQuote(params: {
+    quote: QuoteSnapshot;
+    customerId: string;
+    organizationId: string;
+  }): Promise<{ order: Order; isNew: boolean }> {
+    const supabase = this.getSupabaseAdminClient();
+
+    const cleanQuoteId = params.quote.id.replace(/-/g, '').slice(0, 16);
+    const orderCode = `ord_${cleanQuoteId}`;
+    const orderNumber = `HOO-${new Date().getFullYear()}-${cleanQuoteId.slice(0, 6).toUpperCase()}`;
+
+    const newOrder = OrderService.createOrderFromQuote(params.quote, params.customerId);
+    newOrder.id = orderCode;
+    newOrder.organizationId = params.organizationId;
+    newOrder.orderNumber = orderNumber;
+
+    const orderUuid = toDeterministicUuid(`order:${orderCode}`);
+
+    const { data, error } = await supabase.rpc('convert_quote_to_active_order', {
+      p_order_id: orderUuid,
+      p_quote_id: params.quote.id,
+      p_customer_id: params.customerId,
+      p_organization_id: params.organizationId,
+      p_order_code: orderCode,
+      p_order_number: orderNumber,
+      p_payload_json: newOrder,
+    });
+
+    if (error) {
+      throw new Error(`QuoteToOrderError: ${error.message}`);
+    }
+
+    if (!data?.order) {
+      throw new Error('QuoteToOrderError: Transaction failed to return an order.');
+    }
+
+    const order = (typeof data.order === 'string' ? JSON.parse(data.order) : data.order) as Order;
+    return { order, isNew: !data.existing };
+  }
+
+  /**
+   * Single-Use Private Guest Quote Claiming:
+   * Atomically assigns an unauthenticated quote to a customer's organization.
+   * Prevents cross-tenant claiming collisions via database locks.
+   */
+  public async claimGuestQuote(
+    quoteId: string,
+    customerId: string,
+    organizationId: string
+  ): Promise<QuoteSnapshot> {
+    const supabase = this.getSupabaseAdminClient();
+
+    const { data, error } = await supabase.rpc('claim_guest_quote', {
+      p_quote_id: quoteId,
+      p_customer_id: customerId,
+      p_organization_id: organizationId,
+    });
+
+    if (error) {
+      throw new Error(`QuoteClaimError: ${error.message}`);
+    }
+
+    return (typeof data.quote === 'string' ? JSON.parse(data.quote) : data.quote) as QuoteSnapshot;
   }
 
   public async listOrdersForCustomer(
@@ -713,7 +756,18 @@ class PersistentDatabaseEngine {
   public async recordPaymentAttempt(record: DbPaymentRecord): Promise<DbPaymentRecord> {
     const supabase = this.getSupabaseAdminClient();
     const paymentUuid = toDeterministicUuid(`pay:${record.id}`);
-    const orderUuid = toDeterministicUuid(`order:${record.orderId}`);
+    let orderUuid = toDeterministicUuid(`order:${record.orderId}`);
+
+    const { data: orderRows } = await supabase
+      .from('orders')
+      .select('id')
+      .or(`order_code.eq.${record.orderId},order_number.eq.${record.orderId}`)
+      .limit(1);
+
+    if (orderRows && orderRows.length > 0 && orderRows[0]?.id) {
+      orderUuid = orderRows[0].id;
+    }
+
     const financeUuid =
       record.verifiedByFinanceId && isValidUuid(record.verifiedByFinanceId)
         ? record.verifiedByFinanceId

@@ -450,9 +450,49 @@ export async function supabasePgliteFetch(
   }
 
   // ---------------------------------------------------------------------------
-  // 3. SUPABASE POSTGREST (/rest/v1/<table>)
+  // 3. SUPABASE POSTGREST (/rest/v1/<table> & /rest/v1/rpc/<function>)
   // ---------------------------------------------------------------------------
   if (url.pathname.startsWith('/rest/v1/')) {
+    // 3a. RPC STORED PROCEDURE CALLS (/rest/v1/rpc/<fnName>)
+    if (url.pathname.startsWith('/rest/v1/rpc/')) {
+      const fnName = url.pathname.replace('/rest/v1/rpc/', '').replace(/\/$/, '');
+      const rawBody = String(init?.body || '{}');
+      const rpcArgs = JSON.parse(rawBody || '{}');
+
+      try {
+        const argKeys = Object.keys(rpcArgs);
+        let sql = '';
+        let values: any[] = [];
+
+        if (argKeys.length === 0) {
+          sql = `SELECT public.${fnName}() as result;`;
+        } else {
+          const namedParams = argKeys.map((k, i) => `${k} => $${i + 1}`);
+          sql = `SELECT public.${fnName}(${namedParams.join(', ')}) as result;`;
+          values = argKeys.map((k) => {
+            const val = rpcArgs[k];
+            if (typeof val === 'object' && val !== null) {
+              return JSON.stringify(val);
+            }
+            return val;
+          });
+        }
+
+        const res = await pg.query<{ result: any }>(sql, values);
+        const result = res.rows[0]?.result;
+        return Response.json(result ?? null, { status: 200 });
+      } catch (rpcErr: any) {
+        return Response.json(
+          {
+            code: rpcErr?.code || 'P0001',
+            message: rpcErr?.message || 'Stored procedure execution failed',
+            details: String(rpcErr),
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const table = url.pathname.replace('/rest/v1/', '').replace(/\/$/, '');
     if (!table) {
       return Response.json({ status: 'ok' }, { status: 200 });

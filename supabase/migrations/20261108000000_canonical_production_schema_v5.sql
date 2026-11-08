@@ -531,3 +531,383 @@ CREATE POLICY audit_select ON public.audit_logs
 
 CREATE POLICY audit_insert ON public.audit_logs
     FOR INSERT WITH CHECK (true);
+
+-- ==============================================================================
+-- 16. TRANSACTIONAL INTEGRITY, CONCURRENCY CONTROL & RPC STORED FUNCTIONS (V7.1)
+-- ==============================================================================
+
+-- Priority 1: Prevent duplicate active orders for the same quote snapshot
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_active_quote 
+ON public.orders (quote_id) 
+WHERE order_status NOT IN ('cancelled', 'refunded');
+
+-- Unique attempt code per order to guarantee payment deduplication
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_order_attempt 
+ON public.payments (order_id, attempt_code);
+
+-- RPC 1: Atomic Payment & Order Settlement Function
+CREATE OR REPLACE FUNCTION public.settle_order_payment_paid(
+    p_order_id TEXT,
+    p_payment_attempt_code TEXT,
+    p_staff_id TEXT DEFAULT NULL,
+    p_provider_val_id TEXT DEFAULT NULL,
+    p_evidence_payload JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_order_uuid UUID;
+    v_order RECORD;
+    v_payment RECORD;
+    v_staff_uuid UUID := NULL;
+    v_intake RECORD;
+    v_new_status public.order_status_enum;
+    v_sla_started TIMESTAMPTZ := NULL;
+    v_sla_deadline TIMESTAMPTZ := NULL;
+    v_now TIMESTAMPTZ := timezone('utc', now());
+    v_updated_order_json JSONB;
+BEGIN
+    -- 1. Resolve order UUID
+    IF p_order_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        v_order_uuid := p_order_id::uuid;
+    ELSE
+        SELECT id INTO v_order_uuid FROM public.orders WHERE order_code = p_order_id OR order_number = p_order_id;
+    END IF;
+
+    IF v_order_uuid IS NULL THEN
+        RAISE EXCEPTION 'Order % not found for payment settlement', p_order_id;
+    END IF;
+
+    -- 2. Lock Order row FOR UPDATE
+    SELECT * INTO v_order FROM public.orders WHERE id = v_order_uuid FOR UPDATE;
+    IF v_order.id IS NULL THEN
+        RAISE EXCEPTION 'Order % not found under lock', p_order_id;
+    END IF;
+
+    -- 3. Resolve Staff UUID if provided
+    IF p_staff_id IS NOT NULL AND p_staff_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        v_staff_uuid := p_staff_id::uuid;
+    END IF;
+
+    -- 4. Locate and lock matching payment record
+    SELECT * INTO v_payment 
+    FROM public.payments 
+    WHERE (attempt_code = p_payment_attempt_code OR id::text = p_payment_attempt_code)
+      AND order_id = v_order_uuid
+    FOR UPDATE;
+
+    IF v_payment.id IS NULL THEN
+        RAISE EXCEPTION 'Matching payment attempt % not found for order %', p_payment_attempt_code, p_order_id;
+    END IF;
+
+    -- 5. Amount & Currency Integrity Validation
+    IF v_payment.amount_minor <> v_order.total_minor THEN
+        RAISE EXCEPTION 'Payment amount mismatch: payment has % poisha, order requires % poisha', v_payment.amount_minor, v_order.total_minor;
+    END IF;
+
+    IF v_payment.currency <> v_order.currency THEN
+        RAISE EXCEPTION 'Payment currency mismatch: payment has %, order requires %', v_payment.currency, v_order.currency;
+    END IF;
+
+    -- 6. Check if order is already settled
+    IF v_order.financial_status = 'paid' THEN
+        -- If settled with this exact payment attempt, return idempotent success
+        IF v_payment.payment_status = 'verified' OR v_payment.payment_status = 'paid' THEN
+            RETURN jsonb_build_object(
+                'success', true,
+                'idempotent', true,
+                'order', v_order.payload_json,
+                'payment', row_to_json(v_payment)::jsonb
+            );
+        ELSE
+            RAISE EXCEPTION 'Order % has already been settled by another payment attempt', p_order_id;
+        END IF;
+    END IF;
+
+    -- 7. Check if intake was already completed before payment verification
+    SELECT * INTO v_intake FROM public.order_intakes WHERE order_id = v_order_uuid;
+    IF v_intake.id IS NOT NULL THEN
+        v_new_status := 'ready_for_fulfillment'::public.order_status_enum;
+        v_sla_started := v_now;
+        v_sla_deadline := v_now + INTERVAL '3 days';
+    ELSE
+        v_new_status := 'awaiting_requirements'::public.order_status_enum;
+        v_sla_started := NULL;
+        v_sla_deadline := NULL;
+    END IF;
+
+    -- 8. Update Order
+    v_updated_order_json := jsonb_set(
+        jsonb_set(
+            jsonb_set(
+                v_order.payload_json,
+                '{status}',
+                to_jsonb(v_new_status::text)
+            ),
+            '{financialStatus}',
+            '"paid"'::jsonb
+        ),
+        '{paidAt}',
+        to_jsonb(to_char(v_now, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    );
+    IF v_sla_started IS NOT NULL THEN
+        v_updated_order_json := jsonb_set(
+            jsonb_set(
+                v_updated_order_json,
+                '{slaStartedAt}',
+                to_jsonb(to_char(v_sla_started, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+            ),
+            '{deliveryTargetDate}',
+            to_jsonb(to_char(v_sla_deadline, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+        );
+    END IF;
+
+    UPDATE public.orders
+    SET order_status = v_new_status,
+        financial_status = 'paid'::public.payment_status_enum,
+        sla_started_at = v_sla_started,
+        sla_deadline_at = v_sla_deadline,
+        payload_json = v_updated_order_json,
+        updated_at = v_now
+    WHERE id = v_order_uuid;
+
+    -- 9. Update Payment
+    UPDATE public.payments
+    SET payment_status = 'verified'::public.payment_status_enum,
+        provider_val_id = COALESCE(p_provider_val_id, provider_val_id),
+        verified_by_finance_id = v_staff_uuid,
+        verified_at = v_now,
+        gateway_raw_payload = gateway_raw_payload || COALESCE(p_evidence_payload, '{}'::jsonb)
+    WHERE id = v_payment.id;
+
+    -- 10. Record immutable payment event (replay protection)
+    INSERT INTO public.payment_events (
+        event_key, order_id, payment_id, provider, provider_val_id,
+        status, amount_minor, currency, evidence_payload, created_at
+    ) VALUES (
+        'evt_settle_' || v_payment.attempt_code || '_' || extract(epoch from v_now)::text,
+        v_order_uuid,
+        v_payment.id,
+        v_payment.payment_method::text,
+        COALESCE(p_provider_val_id, v_payment.provider_val_id),
+        'verified',
+        v_payment.amount_minor,
+        v_payment.currency,
+        jsonb_build_object(
+            'settledAt', v_now,
+            'verifiedByStaffId', p_staff_id,
+            'evidence', p_evidence_payload
+        ),
+        v_now
+    )
+    ON CONFLICT (event_key) DO NOTHING;
+
+    -- 11. Append to Audit Logs
+    INSERT INTO public.audit_logs (
+        log_code, actor_id, actor_role, action, entity_type, entity_id, metadata, created_at
+    ) VALUES (
+        'log_settle_' || v_order_uuid::text || '_' || extract(epoch from v_now)::text,
+        v_staff_uuid,
+        CASE WHEN v_staff_uuid IS NOT NULL THEN 'finance' ELSE 'customer' END,
+        'PAYMENT_SETTLED_ORDER_PAID',
+        'order',
+        v_order_uuid::text,
+        jsonb_build_object(
+            'paymentAttemptCode', p_payment_attempt_code,
+            'amountMinor', v_payment.amount_minor,
+            'currency', v_payment.currency,
+            'orderStatus', v_new_status::text,
+            'financialStatus', 'paid',
+            'verifiedByStaffId', p_staff_id
+        ),
+        v_now
+    );
+
+    SELECT * INTO v_payment FROM public.payments WHERE id = v_payment.id;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'idempotent', false,
+        'order', v_updated_order_json,
+        'payment', row_to_json(v_payment)::jsonb
+    );
+END;
+$$;
+
+-- RPC 2: Transactional Quote to Active Order Conversion Function
+CREATE OR REPLACE FUNCTION public.convert_quote_to_active_order(
+    p_order_id UUID,
+    p_quote_id TEXT,
+    p_customer_id UUID,
+    p_organization_id UUID,
+    p_order_code TEXT,
+    p_order_number TEXT,
+    p_payload_json JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_quote_uuid UUID;
+    v_quote RECORD;
+    v_existing_order RECORD;
+    v_now TIMESTAMPTZ := timezone('utc', now());
+    v_created_order RECORD;
+BEGIN
+    -- 1. Resolve quote UUID
+    IF p_quote_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        v_quote_uuid := p_quote_id::uuid;
+    ELSE
+        SELECT id INTO v_quote_uuid FROM public.quotes WHERE quote_code = p_quote_id;
+    END IF;
+
+    IF v_quote_uuid IS NULL THEN
+        RAISE EXCEPTION 'Quote % not found', p_quote_id;
+    END IF;
+
+    -- 2. Lock Quote row FOR UPDATE
+    SELECT * INTO v_quote FROM public.quotes WHERE id = v_quote_uuid FOR UPDATE;
+    IF v_quote.id IS NULL THEN
+        RAISE EXCEPTION 'Quote % not found under lock', p_quote_id;
+    END IF;
+
+    -- 3. Expiration Check
+    IF v_quote.expires_at < v_now THEN
+        RAISE EXCEPTION 'Cannot convert quote: Quote has expired';
+    END IF;
+
+    -- 4. Guest Claiming (Single-use & private)
+    IF v_quote.customer_id IS NULL THEN
+        UPDATE public.quotes 
+        SET customer_id = p_customer_id, 
+            organization_id = p_organization_id 
+        WHERE id = v_quote_uuid AND customer_id IS NULL;
+    ELSIF v_quote.customer_id <> p_customer_id THEN
+        RAISE EXCEPTION 'Cross-tenant violation: Quote belongs to another customer';
+    END IF;
+
+    -- 5. Check if active order already exists for this quote
+    SELECT * INTO v_existing_order 
+    FROM public.orders 
+    WHERE quote_id = v_quote_uuid 
+      AND order_status NOT IN ('cancelled', 'refunded')
+    LIMIT 1;
+
+    IF v_existing_order.id IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'existing', true,
+            'order', v_existing_order.payload_json
+        );
+    END IF;
+
+    -- 6. Insert new order with unique collision protection
+    BEGIN
+        INSERT INTO public.orders (
+            id, order_code, order_number, organization_id, customer_id, quote_id,
+            order_status, financial_status, intake_status, total_minor, currency,
+            quote_snapshot, payload_json, created_at, updated_at
+        ) VALUES (
+            p_order_id,
+            p_order_code,
+            p_order_number,
+            p_organization_id,
+            p_customer_id,
+            v_quote_uuid,
+            'awaiting_payment'::public.order_status_enum,
+            'unpaid'::public.payment_status_enum,
+            'not_started',
+            v_quote.total_minor,
+            v_quote.currency,
+            v_quote.selected_items,
+            p_payload_json,
+            v_now,
+            v_now
+        )
+        RETURNING * INTO v_created_order;
+
+        RETURN jsonb_build_object(
+            'success', true,
+            'existing', false,
+            'order', v_created_order.payload_json
+        );
+    EXCEPTION WHEN unique_violation THEN
+        SELECT * INTO v_existing_order 
+        FROM public.orders 
+        WHERE quote_id = v_quote_uuid 
+          AND order_status NOT IN ('cancelled', 'refunded')
+        LIMIT 1;
+
+        RETURN jsonb_build_object(
+            'success', true,
+            'existing', true,
+            'order', v_existing_order.payload_json
+        );
+    END;
+END;
+$$;
+
+-- RPC 3: Guest Quote Claiming Function
+CREATE OR REPLACE FUNCTION public.claim_guest_quote(
+    p_quote_id TEXT,
+    p_customer_id UUID,
+    p_organization_id UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_quote_uuid UUID;
+    v_quote RECORD;
+    v_now TIMESTAMPTZ := timezone('utc', now());
+    v_updated_quote_json JSONB;
+BEGIN
+    IF p_quote_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+        v_quote_uuid := p_quote_id::uuid;
+    ELSE
+        SELECT id INTO v_quote_uuid FROM public.quotes WHERE quote_code = p_quote_id;
+    END IF;
+
+    IF v_quote_uuid IS NULL THEN
+        RAISE EXCEPTION 'Quote % not found', p_quote_id;
+    END IF;
+
+    SELECT * INTO v_quote FROM public.quotes WHERE id = v_quote_uuid FOR UPDATE;
+    IF v_quote.id IS NULL THEN
+        RAISE EXCEPTION 'Quote not found under lock';
+    END IF;
+
+    IF v_quote.expires_at < v_now THEN
+        RAISE EXCEPTION 'Quote has expired';
+    END IF;
+
+    IF v_quote.customer_id IS NOT NULL AND v_quote.customer_id <> p_customer_id THEN
+        RAISE EXCEPTION 'Cross-tenant violation: Quote already belongs to another customer';
+    END IF;
+
+    v_updated_quote_json := jsonb_set(
+        jsonb_set(
+            v_quote.payload_json,
+            '{customerId}',
+            to_jsonb(p_customer_id::text)
+        ),
+        '{organizationId}',
+        to_jsonb(p_organization_id::text)
+    );
+
+    UPDATE public.quotes
+    SET customer_id = p_customer_id,
+        organization_id = p_organization_id,
+        payload_json = v_updated_quote_json
+    WHERE id = v_quote_uuid;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'quote', v_updated_quote_json
+    );
+END;
+$$;

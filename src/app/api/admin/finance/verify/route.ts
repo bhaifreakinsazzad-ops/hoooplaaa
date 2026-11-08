@@ -31,17 +31,27 @@ export async function POST(req: NextRequest) {
     const verifiedByStaffId = auth.user.id;
     const now = new Date().toISOString();
 
-    if (approved) {
-      const payments = await persistentDB.getPaymentsForOrder(orderId);
-      const latestPaymentId =
-        payments.length > 0
-          ? payments[0].id
-          : `pay_mfs_${verifiedByStaffId.slice(0, 8)}_${Date.now()}`;
+    // Priority 2: Enforce actual settlement evidence — prohibit fictional payment generation
+    const payments = await persistentDB.getPaymentsForOrder(orderId);
+    const pendingPayment = payments.find(
+      (p) => p.paymentStatus === 'pending_verification' || p.paymentStatus === 'initiated'
+    );
 
-      // Atomic payment settlement: updates order to paid, payment to verified, and logs audit
+    if (!pendingPayment) {
+      return NextResponse.json(
+        {
+          error:
+            'Unprocessable Entity: No matching pending payment attempt found for this order. Finance verification requires an existing pending payment record.',
+        },
+        { status: 422 }
+      );
+    }
+
+    if (approved) {
+      // Atomic payment settlement: updates order to paid, payment to verified, and logs audit in PostgreSQL
       const settled = await persistentDB.settleOrderPaymentPaid({
         orderId,
-        paymentAttemptId: latestPaymentId,
+        paymentAttemptId: pendingPayment.id,
         verifiedByStaffId,
         evidencePayload: {
           approvedByStaffId: verifiedByStaffId,
@@ -64,17 +74,13 @@ export async function POST(req: NextRequest) {
       };
       await persistentDB.saveOrder(updated, order.organizationId);
 
-      const payments = await persistentDB.getPaymentsForOrder(orderId);
-      if (payments.length > 0) {
-        const latest = payments[0];
-        await persistentDB.recordPaymentAttempt({
-          ...latest,
-          paymentStatus: 'failed',
-          verifiedByFinanceId: verifiedByStaffId,
-          verifiedAt: now,
-          rejectionReason: rejectionReason || 'Reference not found on settlement statement',
-        });
-      }
+      await persistentDB.recordPaymentAttempt({
+        ...pendingPayment,
+        paymentStatus: 'failed',
+        verifiedByFinanceId: verifiedByStaffId,
+        verifiedAt: now,
+        rejectionReason: rejectionReason || 'Reference not found on settlement statement',
+      });
 
       await persistentDB.recordAuditLog({
         actorId: verifiedByStaffId,

@@ -70,8 +70,8 @@ export async function POST(req: NextRequest) {
         );
       }
     } else {
-      // Quote was created by guest; bind to this customer now
-      await persistentDB.saveQuote(quote, auth.user.id, auth.user.organizationId);
+      // Quote was created by guest; single-use, concurrency-safe claiming for this customer
+      await persistentDB.claimGuestQuote(quote.id, auth.user.id, auth.user.organizationId);
     }
 
     if (!quote.eligibility.canSelfCheckout) {
@@ -81,12 +81,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Checkout Idempotency: Check if an active order already exists for this quote
-    let order = await persistentDB.findActiveOrderByQuoteId(quote.id, auth.user.id);
-    if (!order) {
-      order = OrderService.createOrderFromQuote(quote, auth.user.id);
-      await persistentDB.saveOrder(order, auth.user.organizationId);
-    } else if (order.financialStatus === 'paid') {
+    // 3. Concurrency-Safe Transactional Order Conversion (Priority 1)
+    // Guarantees simultaneous checkout attempts return the exact same order without duplicate records
+    const { order } = await persistentDB.createOrGetActiveOrderForQuote({
+      quote,
+      customerId: auth.user.id,
+      organizationId: auth.user.organizationId,
+    });
+
+    if (order.financialStatus === 'paid') {
       return NextResponse.json({
         success: true,
         alreadyPaid: true,

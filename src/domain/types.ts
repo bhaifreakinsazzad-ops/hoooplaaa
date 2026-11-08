@@ -186,6 +186,7 @@ export interface Order {
   assignedSpecialistId?: string;
   assignedSpecialistName?: string;
   quoteSnapshot: QuoteSnapshot;
+  organizationId?: string;
 }
 
 export type PaymentMethod = 'sslcommerz' | 'bkash_direct' | 'manual_mfs' | 'bank_transfer';

@@ -41,8 +41,14 @@ export async function POST(req: NextRequest) {
             role: created.role,
           },
         });
+        const isSecureEnv =
+          process.env.NODE_ENV === 'production' ||
+          process.env.VERCEL_ENV === 'production' ||
+          process.env.VERCEL_ENV === 'preview';
+
         response.cookies.set(SESSION_COOKIE_NAME, token, {
           httpOnly: true,
+          secure: isSecureEnv,
           sameSite: 'lax',
           path: '/',
           maxAge: 86400,
@@ -75,8 +81,15 @@ export async function POST(req: NextRequest) {
         role: user.role,
       },
     });
+
+    const isSecureEnv =
+      process.env.NODE_ENV === 'production' ||
+      process.env.VERCEL_ENV === 'production' ||
+      process.env.VERCEL_ENV === 'preview';
+
     response.cookies.set(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
+      secure: isSecureEnv,
       sameSite: 'lax',
       path: '/',
       maxAge: 86400,
