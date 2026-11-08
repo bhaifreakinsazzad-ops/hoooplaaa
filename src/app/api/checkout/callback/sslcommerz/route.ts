@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { orderStore } from '@/domain/store';
+import { persistentDB } from '@/domain/persistent-db';
 import { SSLCommerzAdapter } from '@/domain/payment-adapter';
 import { OrderService } from '@/domain/order-service';
 
@@ -31,8 +31,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Lookup order and update state to paid
-    const order = orderStore.get(verification.orderId);
+    const order = await persistentDB.getOrder(verification.orderId);
     if (!order) {
       return NextResponse.json(
         { success: false, error: 'Order not found for verified payment.' },
@@ -41,7 +40,7 @@ export async function POST(req: NextRequest) {
     }
 
     const updatedOrder = OrderService.markOrderPaid(order, verification.paymentAttemptId);
-    orderStore.set(updatedOrder.id, updatedOrder);
+    await persistentDB.saveOrder(updatedOrder, order.organizationId);
 
     return NextResponse.json({
       success: true,

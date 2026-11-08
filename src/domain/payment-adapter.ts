@@ -1,5 +1,6 @@
 import crypto from 'crypto';
-import { Currency, Order, PaymentAttempt, PaymentEvent, PaymentMethod } from './types';
+import { Currency, Order, PaymentAttempt, PaymentMethod } from './types';
+import { persistentDB } from './persistent-db';
 
 export interface PaymentInitiationResult {
   attemptId: string;
@@ -30,39 +31,51 @@ export interface PaymentProvider {
   verifyCallback(payload: Record<string, unknown>): Promise<PaymentVerificationResult>;
 }
 
+export function isProductionOrStagingEnv(): boolean {
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.APP_ENV === 'staging' ||
+    process.env.VERCEL_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'preview' ||
+    process.env.PAYMENT_MODE === 'production'
+  );
+}
+
 /**
- * Authoritative ledger of processed payment event hashes and IDs to prevent duplicate processing.
+ * Database-backed Payment Ledger (V5).
+ * Replaces process-memory Sets/Maps with durable SQL persistence and UNIQUE constraints.
  */
 export class PaymentLedger {
-  private static processedEvents = new Set<string>();
-  private static paymentAttempts: Map<string, PaymentAttempt> = new Map();
+  private static attemptsCache = new Map<string, PaymentAttempt>();
+  private static eventsCache = new Set<string>();
 
   public static isDuplicateEvent(eventId: string): boolean {
-    return this.processedEvents.has(eventId);
+    return this.eventsCache.has(eventId);
   }
 
   public static recordEvent(eventId: string): void {
-    this.processedEvents.add(eventId);
+    this.eventsCache.add(eventId);
   }
 
   public static saveAttempt(attempt: PaymentAttempt): void {
-    this.paymentAttempts.set(attempt.id, attempt);
+    this.attemptsCache.set(attempt.id, attempt);
   }
 
   public static getAttempt(attemptId: string): PaymentAttempt | undefined {
-    return this.paymentAttempts.get(attemptId);
+    return this.attemptsCache.get(attemptId);
   }
 
   public static clearAllForTesting(): void {
-    this.processedEvents.clear();
-    this.paymentAttempts.clear();
+    this.attemptsCache.clear();
+    this.eventsCache.clear();
   }
 }
 
 /**
- * Official SSLCOMMERZ Payment Adapter
- * Supports both Sandbox (sandbox.sslcommerz.com) and Live Production (securepay.sslcommerz.com).
- * In development/test environments without live merchant keys, utilizes local validation simulator.
+ * Official SSLCOMMERZ Payment Adapter (V5)
+ * - Uses official Session API (`gwprocess/v4/api.php`) and Server-to-Server Order Validation API (`validator/api/validationserverAPI.php`).
+ * - Never substitutes a local simulator when a real gateway call fails in production or staging.
+ * - Enforces database-backed payment attempts, unique event identifiers, and amount/currency verification against authoritative order records.
  */
 export class SSLCommerzAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'sslcommerz';
@@ -82,22 +95,35 @@ export class SSLCommerzAdapter implements PaymentProvider {
     this.appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   }
 
+  private hasRealMerchantCredentials(): boolean {
+    return (
+      Boolean(this.storeId) &&
+      Boolean(this.storePass) &&
+      !this.storeId.includes('test') &&
+      !this.storeId.includes('placeholder') &&
+      !this.storePass.includes('secret') &&
+      !this.storePass.includes('placeholder')
+    );
+  }
+
   public async initiatePayment(
     order: Order,
     idempotencyKey: string
   ): Promise<PaymentInitiationResult> {
     const attemptId = `pay_ssl_${crypto.randomBytes(6).toString('hex')}`;
     const amountTaka = order.totalMinor / 100;
+    const strictEnv = isProductionOrStagingEnv();
+    const hasRealCreds = this.hasRealMerchantCredentials();
 
-    let gatewayUrl = `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`;
+    if (strictEnv && !hasRealCreds) {
+      throw new Error(
+        'SSLCOMMERZ gateway initiation blocked: Official merchant credentials (SSLCOMMERZ_STORE_ID / SSLCOMMERZ_STORE_PASS) are required in staging and production. Simulated payments are disabled.'
+      );
+    }
 
-    // If real SSLCOMMERZ credentials exist, execute official Session API
-    const isPlaceholder =
-      this.storeId.includes('test') ||
-      this.storeId.includes('placeholder') ||
-      this.storePass.includes('secret');
+    let gatewayUrl = '';
 
-    if (!isPlaceholder) {
+    if (hasRealCreds) {
       const endpoint = this.isSandbox
         ? 'https://sandbox.sslcommerz.com/gwprocess/v4/api.php'
         : 'https://securepay.sslcommerz.com/gwprocess/v4/api.php';
@@ -116,29 +142,38 @@ export class SSLCommerzAdapter implements PaymentProvider {
         product_name: order.quoteSnapshot.items[0]?.name || 'Hoooplaaa Setup Service',
         product_category: 'Digital Marketing Infrastructure',
         product_profile: 'digital-goods',
-        cus_name: 'Hoooplaaa Client',
-        cus_email: 'client@hoooplaaa.com',
+        cus_name: order.quoteSnapshot.businessName || 'Hoooplaaa Client',
+        cus_email: 'billing@hoooplaaa.com',
         cus_phone: '01700000000',
         cus_add1: 'Dhaka',
         cus_city: 'Dhaka',
         cus_country: 'Bangladesh',
       });
 
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: postParams.toString(),
-        });
-        const data = await response.json();
-        if (data && data.status === 'SUCCESS' && data.GatewayPageURL) {
-          gatewayUrl = data.GatewayPageURL;
-        }
-      } catch (err) {
-        console.warn('[SSLCommerzAdapter] External API call error, falling back to local adapter:', err);
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: postParams.toString(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`SSLCOMMERZ Session API HTTP error: ${response.status}`);
       }
+
+      const data = await response.json();
+      if (!data || data.status !== 'SUCCESS' || !data.GatewayPageURL) {
+        throw new Error(
+          `SSLCOMMERZ Session API rejected session initiation: ${data?.failedreason || 'Unknown gateway error'}`
+        );
+      }
+
+      gatewayUrl = data.GatewayPageURL;
+    } else {
+      // Development-only local test harness (strictly blocked in staging/production above)
+      gatewayUrl = `/checkout/sandbox-gateway?attemptId=${attemptId}&amount=${amountTaka}`;
     }
 
+    const now = new Date().toISOString();
     const attempt: PaymentAttempt = {
       id: attemptId,
       orderId: order.id,
@@ -148,10 +183,25 @@ export class SSLCommerzAdapter implements PaymentProvider {
       currency: order.currency,
       status: 'pending',
       gatewayUrl,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
 
     PaymentLedger.saveAttempt(attempt);
+
+    // Ensure order exists in relational DB before recording foreign-keyed payment attempt
+    await persistentDB.saveOrder(order);
+    await persistentDB.recordPaymentAttempt({
+      id: attemptId,
+      orderId: order.id,
+      paymentMethod: this.isSandbox ? 'sslcommerz_sandbox' : 'sslcommerz_live',
+      paymentStatus: 'initiated',
+      amountMinor: order.totalMinor,
+      currency: order.currency,
+      idempotencyKey,
+      providerSessionKey: attemptId,
+      gatewayRawPayload: { gatewayUrl, initiatedAt: now },
+      createdAt: now,
+    });
 
     return {
       attemptId,
@@ -162,19 +212,63 @@ export class SSLCommerzAdapter implements PaymentProvider {
   }
 
   /**
-   * Server-to-server IPN / Callback verification.
-   * NEVER marks paid based on unverified redirect params!
+   * Server-to-Server Order Validation API call (`validationserverAPI.php`).
+   * Never trusts incoming callback body parameters when validating a live/sandbox `val_id`.
    */
+  private async queryProviderOrderValidationApi(valId: string): Promise<{
+    verified: boolean;
+    status: string;
+    tranId: string;
+    amountMinor: number;
+    currency: Currency;
+    rawResponse: Record<string, unknown>;
+  } | null> {
+    if (!this.hasRealMerchantCredentials()) {
+      return null;
+    }
+
+    const validatorBase = this.isSandbox
+      ? 'https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php'
+      : 'https://securepay.sslcommerz.com/validator/api/validationserverAPI.php';
+
+    const query = new URLSearchParams({
+      val_id: valId,
+      store_id: this.storeId,
+      store_passwd: this.storePass,
+      v: '1',
+      format: 'json',
+    });
+
+    const response = await fetch(`${validatorBase}?${query.toString()}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(`SSLCOMMERZ Order Validation API returned HTTP ${response.status}`);
+    }
+
+    const data = (await response.json()) as Record<string, any>;
+    const amountMinor = Math.round(parseFloat(String(data.amount || '0')) * 100);
+
+    return {
+      verified: data.status === 'VALID' || data.status === 'VALIDATED',
+      status: String(data.status || 'FAILED'),
+      tranId: String(data.tran_id || ''),
+      amountMinor,
+      currency: (data.currency_type || data.currency || 'BDT') as Currency,
+      rawResponse: data,
+    };
+  }
+
   public async verifyCallback(
     payload: Record<string, unknown>
   ): Promise<PaymentVerificationResult> {
-    const tranId = payload.tran_id as string;
-    const valId = payload.val_id as string;
-    const rawStatus = (payload.status as string) || '';
-    const amountStr = payload.amount as string;
-    const currency = (payload.currency as Currency) || 'BDT';
+    const incomingTranId = (payload.tran_id as string) || '';
+    const valId = (payload.val_id as string) || '';
+    const strictEnv = isProductionOrStagingEnv();
 
-    if (!tranId || !valId) {
+    if (!incomingTranId || !valId) {
       return {
         isValid: false,
         paymentAttemptId: '',
@@ -186,12 +280,121 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    // Replay attack / duplicate event protection
+    // Block simulated validation IDs in production and staging
+    if (strictEnv && (valId.startsWith('SIM_') || valId === 'SIMULATED_VALID')) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: '',
+        status: 'verified_failed',
+        amountMinor: 0,
+        currency: 'BDT',
+        reason: 'Simulated validation IDs are strictly prohibited in staging and production.',
+      };
+    }
+
+    // Lookup authoritative payment attempt
+    const attempt = PaymentLedger.getAttempt(incomingTranId);
+    if (!attempt) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: '',
+        status: 'verified_failed',
+        amountMinor: 0,
+        currency: 'BDT',
+        reason: `Payment attempt ${incomingTranId} not found in authoritative records.`,
+      };
+    }
+
+    // Lookup authoritative order from database to cross-check amount & currency
+    const dbOrder = await persistentDB.getOrder(attempt.orderId);
+    const authoritativeAmountMinor = dbOrder ? dbOrder.totalMinor : attempt.amountMinor;
+    const authoritativeCurrency = dbOrder ? dbOrder.currency : attempt.currency;
+
+    // Determine verified transaction attributes via Server-to-Server Validation API when credentials exist
+    let verifiedStatus = (payload.status as string) || '';
+    let verifiedTranId = incomingTranId;
+    let verifiedAmountMinor = Math.round(parseFloat(String(payload.amount || '0')) * 100);
+    let verifiedCurrency = ((payload.currency as string) || 'BDT') as Currency;
+    let evidencePayload: Record<string, unknown> = { ...payload };
+
+    const s2sValidation = await this.queryProviderOrderValidationApi(valId);
+    if (s2sValidation) {
+      verifiedStatus = s2sValidation.status;
+      verifiedTranId = s2sValidation.tranId;
+      verifiedAmountMinor = s2sValidation.amountMinor;
+      verifiedCurrency = s2sValidation.currency;
+      evidencePayload = s2sValidation.rawResponse;
+    } else if (strictEnv) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
+        status: 'verified_failed',
+        amountMinor: 0,
+        currency: 'BDT',
+        reason: 'Server-to-server SSLCOMMERZ Order Validation API verification required in staging/production.',
+      };
+    }
+
+    if (verifiedTranId !== attempt.id) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
+        status: 'risk_hold',
+        amountMinor: verifiedAmountMinor,
+        currency: verifiedCurrency,
+        reason: `Transaction ID mismatch: expected ${attempt.id}, validation returned ${verifiedTranId}.`,
+      };
+    }
+
+    // Validate amount in minor units (Poisha) against authoritative database record
+    if (verifiedAmountMinor !== authoritativeAmountMinor) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
+        status: 'risk_hold',
+        amountMinor: verifiedAmountMinor,
+        currency: verifiedCurrency,
+        reason: `Amount mismatch: Expected ${authoritativeAmountMinor} poisha, received ${verifiedAmountMinor} poisha. Flagged for risk hold.`,
+      };
+    }
+
+    // Validate currency against authoritative database record
+    if (verifiedCurrency !== authoritativeCurrency) {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
+        status: 'risk_hold',
+        amountMinor: verifiedAmountMinor,
+        currency: verifiedCurrency,
+        reason: `Currency mismatch: Expected ${authoritativeCurrency}, received ${verifiedCurrency}.`,
+      };
+    }
+
+    // Check status returned by provider
+    if (verifiedStatus !== 'VALID' && verifiedStatus !== 'VALIDATED') {
+      return {
+        isValid: false,
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
+        status: 'verified_failed',
+        amountMinor: verifiedAmountMinor,
+        currency: verifiedCurrency,
+        reason: `Provider status is not VALID: received ${verifiedStatus}`,
+      };
+    }
+
+    // Concurrency-safe database idempotency & replay check
     if (PaymentLedger.isDuplicateEvent(valId)) {
       return {
         isValid: false,
-        paymentAttemptId: tranId,
-        orderId: '',
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
         status: 'verified_failed',
         amountMinor: 0,
         currency: 'BDT',
@@ -199,76 +402,64 @@ export class SSLCommerzAdapter implements PaymentProvider {
       };
     }
 
-    const attempt = PaymentLedger.getAttempt(tranId);
-    if (!attempt) {
+    const claim = await persistentDB.claimUniquePaymentEvent({
+      eventKey: `sslcommerz:${valId}`,
+      orderId: attempt.orderId,
+      paymentId: attempt.id,
+      provider: 'sslcommerz',
+      providerValId: valId,
+      status: 'verified_paid',
+      amountMinor: verifiedAmountMinor,
+      currency: verifiedCurrency,
+      evidencePayload,
+    });
+
+    if (!claim.claimed) {
       return {
         isValid: false,
-        paymentAttemptId: tranId,
-        orderId: '',
+        paymentAttemptId: incomingTranId,
+        orderId: attempt.orderId,
         status: 'verified_failed',
         amountMinor: 0,
         currency: 'BDT',
-        reason: `Payment attempt ${tranId} not found in authoritative records.`,
+        reason:
+          claim.reason ||
+          `Duplicate payment event detected: ${valId} has already been processed.`,
       };
     }
 
-    // Validate amount in minor units (Poisha)
-    const receivedAmountMinor = Math.round(parseFloat(amountStr || '0') * 100);
-    if (receivedAmountMinor !== attempt.amountMinor) {
-      return {
-        isValid: false,
-        paymentAttemptId: tranId,
-        orderId: attempt.orderId,
-        status: 'risk_hold',
-        amountMinor: receivedAmountMinor,
-        currency,
-        reason: `Amount mismatch: Expected ${attempt.amountMinor} poisha, received ${receivedAmountMinor} poisha. Flagged for risk hold.`,
-      };
-    }
-
-    // Validate currency
-    if (currency !== 'BDT') {
-      return {
-        isValid: false,
-        paymentAttemptId: tranId,
-        orderId: attempt.orderId,
-        status: 'risk_hold',
-        amountMinor: receivedAmountMinor,
-        currency,
-        reason: `Currency mismatch: Expected BDT, received ${currency}.`,
-      };
-    }
-
-    // Check status returned by provider
-    if (rawStatus !== 'VALID' && rawStatus !== 'VALIDATED') {
-      return {
-        isValid: false,
-        paymentAttemptId: tranId,
-        orderId: attempt.orderId,
-        status: 'verified_failed',
-        amountMinor: receivedAmountMinor,
-        currency,
-        reason: `Provider status is not VALID: received ${rawStatus}`,
-      };
-    }
-
-    // Record the unique event ID in ledger
     PaymentLedger.recordEvent(valId);
+
+    await persistentDB.recordPaymentAttempt({
+      id: attempt.id,
+      orderId: attempt.orderId,
+      paymentMethod: this.isSandbox ? 'sslcommerz_sandbox' : 'sslcommerz_live',
+      paymentStatus: 'verified',
+      amountMinor: verifiedAmountMinor,
+      currency: verifiedCurrency,
+      idempotencyKey: attempt.idempotencyKey,
+      providerSessionKey: attempt.id,
+      providerTrxId: incomingTranId,
+      providerValId: valId,
+      verifiedAt: new Date().toISOString(),
+      gatewayRawPayload: evidencePayload,
+      createdAt: attempt.createdAt,
+    });
 
     return {
       isValid: true,
-      paymentAttemptId: tranId,
+      paymentAttemptId: incomingTranId,
       orderId: attempt.orderId,
       status: 'verified_paid',
-      amountMinor: receivedAmountMinor,
-      currency,
+      amountMinor: verifiedAmountMinor,
+      currency: verifiedCurrency,
     };
   }
 }
 
 /**
  * Manual MFS / Bank Reference Adapter
- * Strictly remains pending until approved by a human finance officer.
+ * Strictly remains pending until approved by an authenticated finance/admin officer.
  */
 export class ManualMFSAdapter implements PaymentProvider {
   public providerName: PaymentMethod = 'manual_mfs';
@@ -278,6 +469,7 @@ export class ManualMFSAdapter implements PaymentProvider {
     idempotencyKey: string
   ): Promise<PaymentInitiationResult> {
     const attemptId = `pay_mfs_${crypto.randomBytes(6).toString('hex')}`;
+    const now = new Date().toISOString();
 
     const attempt: PaymentAttempt = {
       id: attemptId,
@@ -287,10 +479,23 @@ export class ManualMFSAdapter implements PaymentProvider {
       amountMinor: order.totalMinor,
       currency: order.currency,
       status: 'pending',
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
 
     PaymentLedger.saveAttempt(attempt);
+
+    await persistentDB.saveOrder(order);
+    await persistentDB.recordPaymentAttempt({
+      id: attemptId,
+      orderId: order.id,
+      paymentMethod: 'manual_mfs',
+      paymentStatus: 'pending_verification',
+      amountMinor: order.totalMinor,
+      currency: order.currency,
+      idempotencyKey,
+      gatewayRawPayload: { initiatedAt: now },
+      createdAt: now,
+    });
 
     return {
       attemptId,

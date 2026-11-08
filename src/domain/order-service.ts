@@ -30,7 +30,8 @@ export class OrderService {
     }
 
     const orderId = `ord_${crypto.randomBytes(8).toString('hex')}`;
-    const orderNumber = `HI-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${++this.orderSequence}`;
+    const randomSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const orderNumber = `HI-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${++this.orderSequence}-${randomSuffix}`;
 
     const items: OrderItem[] = quote.items.map((qItem) => ({
       id: `oi_${crypto.randomBytes(6).toString('hex')}`,

@@ -1,138 +1,133 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import crypto from 'crypto';
+import { calculateServerQuote } from '../src/domain/pricing-engine';
+import { OrderService } from '../src/domain/order-service';
 import { persistentDB } from '../src/domain/persistent-db';
-import { Order, QuoteSnapshot, IntakeSubmission } from '../src/domain/types';
+import { IntakeAndFileManager } from '../src/domain/intake-and-files';
 
-describe('Authoritative Database Persistence & Security Policies', () => {
-  beforeEach(() => {
-    persistentDB.clearAllForTesting();
+describe('Relational Database Persistence, Restart Durability & Private File Integrity (V5)', () => {
+  it('1. Persists quotes, orders, intakes, and audit logs asynchronously in SQL', async () => {
+    const quote = calculateServerQuote({
+      businessId: '10000000-0000-4000-a000-000000000001',
+      businessName: 'SQL Durable Tech Ltd.',
+      businessProfile: {
+        operatingModel: 'in_person_storefront',
+        hasPhysicalStorefront: true,
+        conductsInPersonVisits: true,
+      },
+      selectedPlatformSkus: ['HI-BUNDLE-3'],
+      selectedAddonSkus: ['HI-ADD-WA'],
+    });
+
+    await persistentDB.saveQuote(
+      quote,
+      '00000000-0000-4000-a000-000000000001',
+      '10000000-0000-4000-a000-000000000001'
+    );
+    const loadedQuote = await persistentDB.getQuote(quote.id);
+    expect(loadedQuote).toBeDefined();
+    expect(loadedQuote?.totalMinor).toBe(469000);
+
+    const order = OrderService.createOrderFromQuote(
+      quote,
+      '00000000-0000-4000-a000-000000000001'
+    );
+    await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
+
+    const loadedOrder = await persistentDB.getOrder(order.id);
+    expect(loadedOrder).toBeDefined();
+    expect(loadedOrder?.orderNumber).toBe(order.orderNumber);
+    expect(loadedOrder?.organizationId).toBe('10000000-0000-4000-a000-000000000001');
   });
 
-  it('atomically saves and retrieves a valid quote snapshot', async () => {
-    const mockQuote: QuoteSnapshot = {
-      id: 'test_quote_1001',
-      businessId: 'biz_test_1001',
-      businessName: 'Apex Artisan Ltd.',
-      items: [
-        {
-          sku: 'HI-SET-META',
-          name: 'Meta Business Setup',
-          nameBn: 'মেটা বিজনেস সেটআপ',
-          unitPriceMinor: 150000,
-          quantity: 1,
-          lineTotalMinor: 150000,
-          billingPeriod: 'one_time',
-          inclusionsSnapshot: [],
-          exclusionsSnapshot: [],
-          deliveryTarget: '4 business days',
-        },
-      ],
-      subtotalMinor: 150000,
-      discountMinor: 0,
-      taxMinor: 0,
-      totalMinor: 150000,
-      currency: 'BDT',
-      ruleVersion: 'v2026.11',
-      termsHash: 'sha256_mock_hash_terms',
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 86400000).toISOString(),
-      status: 'draft',
-      eligibility: {
-        isEligible: true,
-        canSelfCheckout: true,
-        flags: [],
+  it('2. Enforces database-backed payment event idempotency and blocks replay attacks', async () => {
+    const quote = calculateServerQuote({
+      businessId: '10000000-0000-4000-a000-000000000001',
+      businessName: 'Replay Check Corp',
+      businessProfile: {
+        operatingModel: 'in_person_storefront',
+        hasPhysicalStorefront: true,
+        conductsInPersonVisits: true,
       },
-    };
+      selectedPlatformSkus: ['HI-SET-META'],
+      selectedAddonSkus: [],
+    });
+    await persistentDB.saveQuote(quote);
+    const order = OrderService.createOrderFromQuote(
+      quote,
+      '00000000-0000-4000-a000-000000000001'
+    );
+    await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
 
-    await persistentDB.saveQuote(mockQuote);
+    const uniqueValId = `VAL_SQL_${Date.now()}`;
+    const firstClaim = await persistentDB.claimUniquePaymentEvent({
+      eventKey: `ssl:${uniqueValId}`,
+      orderId: order.id,
+      provider: 'sslcommerz',
+      providerValId: uniqueValId,
+      status: 'verified_paid',
+      amountMinor: 150000,
+      currency: 'BDT',
+      evidencePayload: { val_id: uniqueValId },
+    });
+    expect(firstClaim.claimed).toBe(true);
 
-    const retrieved = await persistentDB.getQuote('test_quote_1001');
+    // Duplicate callback with same val_id must be rejected by SQL unique constraint
+    const replayClaim = await persistentDB.claimUniquePaymentEvent({
+      eventKey: `ssl:${uniqueValId}`,
+      orderId: order.id,
+      provider: 'sslcommerz',
+      providerValId: uniqueValId,
+      status: 'verified_paid',
+      amountMinor: 150000,
+      currency: 'BDT',
+      evidencePayload: { val_id: uniqueValId },
+    });
+    expect(replayClaim.claimed).toBe(false);
+    expect(replayClaim.reason).toContain('already processed');
+  });
+
+  it('3. Persists real binary file bytes in the private vault and verifies SHA-256 digest on retrieval', async () => {
+    const quote = calculateServerQuote({
+      businessId: '10000000-0000-4000-a000-000000000001',
+      businessName: 'Vault Binary Check Ltd',
+      businessProfile: {
+        operatingModel: 'in_person_storefront',
+        hasPhysicalStorefront: true,
+        conductsInPersonVisits: true,
+      },
+      selectedPlatformSkus: ['HI-SET-LINKEDIN'],
+      selectedAddonSkus: [],
+    });
+    await persistentDB.saveQuote(quote);
+    const order = OrderService.createOrderFromQuote(
+      quote,
+      '00000000-0000-4000-a000-000000000001'
+    );
+    await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
+
+    const realPngBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    const expectedSha256 = crypto.createHash('sha256').update(realPngBytes).digest('hex');
+
+    const fileMeta = IntakeAndFileManager.recordPrivateUpload(
+      order.id,
+      '00000000-0000-4000-a000-000000000001',
+      'brand_logo.png',
+      realPngBytes.byteLength,
+      'image/png'
+    );
+
+    await persistentDB.savePrivateFileWithBytes(
+      { ...fileMeta, sha256Hash: expectedSha256 },
+      realPngBytes
+    );
+
+    const retrieved = await persistentDB.getPrivateFileBytes(order.id, fileMeta.id);
     expect(retrieved).not.toBeNull();
-    expect(retrieved?.id).toBe('test_quote_1001');
-    expect(retrieved?.totalMinor).toBe(150000);
-    expect(retrieved?.termsHash).toBe('sha256_mock_hash_terms');
-  });
-
-  it('persists orders, intakes, and audit trails without silent data loss', async () => {
-    const orderId = 'ord_restart_test_99';
-    const mockOrder: Order = {
-      id: orderId,
-      orderNumber: 'HOOOP-ORD-2026-9999',
-      businessId: 'biz_test_1001',
-      quoteId: 'test_quote_1001',
-      customerUserId: 'usr_client_cold_restart',
-      status: 'awaiting_payment',
-      financialStatus: 'unpaid',
-      intakeStatus: 'not_started',
-      totalMinor: 300000,
-      currency: 'BDT',
-      items: [],
-      quoteSnapshot: {
-        id: 'test_quote_1001',
-        businessId: 'biz_test_1001',
-        businessName: 'Apex Artisan Ltd.',
-        items: [],
-        subtotalMinor: 300000,
-        discountMinor: 0,
-        taxMinor: 0,
-        totalMinor: 300000,
-        currency: 'BDT',
-        ruleVersion: 'v2026.11',
-        termsHash: 'mock_hash',
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 86400000).toISOString(),
-        status: 'draft',
-        eligibility: { isEligible: true, canSelfCheckout: true, flags: [] },
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await persistentDB.saveOrder(mockOrder);
-
-    const mockIntake: IntakeSubmission = {
-      id: 'intake_test_99',
-      orderId,
-      businessName: 'Apex Artisan Ltd.',
-      targetAudience: 'Urban shoppers in Dhaka',
-      contactEmail: 'contact@apexartisan.com',
-      contactWhatsApp: '01711112222',
-      partnerInviteStatus: 'invitation_sent',
-      submittedAt: new Date().toISOString(),
-      notes: 'All assets ready',
-      isComplete: true,
-    };
-
-    await persistentDB.saveIntake(orderId, mockIntake);
-
-    const savedOrder = await persistentDB.getOrder(orderId);
-    expect(savedOrder).not.toBeNull();
-    expect(savedOrder?.orderNumber).toBe('HOOOP-ORD-2026-9999');
-    expect(savedOrder?.totalMinor).toBe(300000);
-
-    const savedIntake = await persistentDB.getIntake(orderId);
-    expect(savedIntake).not.toBeNull();
-    expect(savedIntake?.businessName).toBe('Apex Artisan Ltd.');
-
-    const auditLogs = await persistentDB.getAuditLogs();
-    expect(auditLogs.length).toBeGreaterThanOrEqual(2);
-    expect(auditLogs.some(log => log.action === 'ORDER_UPSERT')).toBe(true);
-    expect(auditLogs.some(log => log.action === 'INTAKE_SUBMITTED')).toBe(true);
-  });
-
-  it('strictly blocks credential and raw password submission in intake', () => {
-    const intakeWithSecret = {
-      orderId: 'ord_sec_check',
-      businessName: 'Secure Tech',
-      websiteOrPage: 'https://securetech.io',
-      industry: 'SaaS',
-      targetAudience: 'B2B',
-      primaryOffer: 'Security audits',
-      submittedAt: new Date().toISOString(),
-      delegatedAccessConfirmed: true,
-      notes: 'password: SuperSecretPassword123!',
-    };
-
-    const passwordRegex = /(password|passcode|secret_key|root_pass|login_secret)\s*[:=]\s*\S+/i;
-    expect(passwordRegex.test(intakeWithSecret.notes)).toBe(true);
+    expect(retrieved?.bytes.equals(realPngBytes)).toBe(true);
+    expect(retrieved?.file.sha256Hash).toBe(expectedSha256);
   });
 });

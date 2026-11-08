@@ -31,3 +31,7 @@ next-env.d.ts
 /data/*.db
 /data/*.sqlite
 /data/*.json
+
+.runtime
+test-results
+playwright-report

@@ -43,7 +43,9 @@ export class IntakeAndFileManager {
     fileSizeBytes: number,
     mimeType: string
   ): FileValidationResult {
-    const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
+    const ext = fileName.includes('.')
+      ? fileName.slice(fileName.lastIndexOf('.')).toLowerCase()
+      : '';
 
     if (FORBIDDEN_EXTENSIONS.includes(ext)) {
       return {
@@ -97,21 +99,23 @@ export class IntakeAndFileManager {
       storagePath,
       isPrivate: true,
       uploadedAt: new Date().toISOString(),
-      downloadUrl: `/api/orders/${orderId}/files/${fileId}`,
+      downloadUrl: `/api/orders/${orderId}/files?download=${fileId}`,
     };
   }
 
   /**
    * Validate intake submission.
-   * Crucial rule: NEVER allows or stores raw passwords.
+   * Crucial rule: NEVER allows or stores raw passwords in field names or text values.
    */
   public static validateIntakeSubmission(rawInput: Record<string, unknown>): IntakeSubmission {
-    // Security check: Check if customer attempted to pass password fields
     const dangerousKeys = Object.keys(rawInput).filter((k) =>
       /password|passcode|secret|credential/i.test(k)
     );
+    const hasPlaintextPasswordValue = Object.values(rawInput).some(
+      (v) => typeof v === 'string' && /password\s*(is|:|=)|pwd\s*(:|=)/i.test(v)
+    );
 
-    if (dangerousKeys.length > 0) {
+    if (dangerousKeys.length > 0 || hasPlaintextPasswordValue) {
       throw new Error(
         'Security violation: Passwords must NEVER be submitted in intake forms. Please use delegated partner invitations.'
       );
@@ -121,10 +125,14 @@ export class IntakeAndFileManager {
     const businessName = (rawInput.businessName as string) || '';
     const contactEmail = (rawInput.contactEmail as string) || '';
     const contactWhatsApp = (rawInput.contactWhatsApp as string) || '';
-    const partnerInviteStatus = (rawInput.partnerInviteStatus as IntakeSubmission['partnerInviteStatus']) || 'pending_instructions';
+    const partnerInviteStatus =
+      (rawInput.partnerInviteStatus as IntakeSubmission['partnerInviteStatus']) ||
+      'pending_instructions';
 
     if (!orderId || !businessName || !contactEmail) {
-      throw new Error('Missing required fields: orderId, businessName, and contactEmail are required.');
+      throw new Error(
+        'Missing required fields: orderId, businessName, and contactEmail are required.'
+      );
     }
 
     return {

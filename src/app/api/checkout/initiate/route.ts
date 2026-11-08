@@ -1,22 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { quoteStore, orderStore } from '@/domain/store';
+import { persistentDB } from '@/domain/persistent-db';
 import { OrderService } from '@/domain/order-service';
 import { SSLCommerzAdapter, ManualMFSAdapter } from '@/domain/payment-adapter';
-import { Order, PaymentMethod } from '@/domain/types';
+import { authenticateRequest, requireOrderAccess } from '@/domain/auth-guard';
 
+/**
+ * POST /api/checkout/initiate
+ * Requires authenticated user session (401 if unauthenticated).
+ * Binds order ownership to authenticated user ID and organization ID.
+ */
 export async function POST(req: NextRequest) {
+  const auth = await authenticateRequest(req);
+  if (!auth.authenticated) {
+    return NextResponse.json({ error: auth.error }, { status: 401 });
+  }
+
   try {
     const body = await req.json();
-    const { quoteId, customerEmail, paymentMethod } = body;
+    const { quoteId, paymentMethod } = body;
 
-    if (!quoteId || !customerEmail || !paymentMethod) {
+    if (!quoteId || !paymentMethod) {
       return NextResponse.json(
-        { error: 'quoteId, customerEmail, and paymentMethod are required.' },
+        { error: 'quoteId and paymentMethod are required.' },
         { status: 400 }
       );
     }
 
-    const quote = quoteStore.get(quoteId);
+    const quote = await persistentDB.getQuote(quoteId);
     if (!quote) {
       return NextResponse.json(
         { error: 'Quote snapshot not found or expired. Please reconfigure.' },
@@ -31,16 +41,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Customer ID derived from email
-    const customerUserId = `usr_${Buffer.from(customerEmail).toString('hex').slice(0, 10)}`;
-
-    // Create immutable order from quote
-    const order = OrderService.createOrderFromQuote(quote, customerUserId);
-    orderStore.set(order.id, order);
+    // Bind order strictly to authenticated session user & tenant
+    const order = OrderService.createOrderFromQuote(quote, auth.user.id);
+    await persistentDB.saveOrder(order, auth.user.organizationId);
 
     const idempotencyKey = `idemp_${order.id}_${Date.now()}`;
 
-    // Initiate payment via chosen adapter
     if (paymentMethod === 'sslcommerz') {
       const sslAdapter = new SSLCommerzAdapter();
       const initResult = await sslAdapter.initiatePayment(order, idempotencyKey);
@@ -48,6 +54,7 @@ export async function POST(req: NextRequest) {
         success: true,
         orderId: order.id,
         orderNumber: order.orderNumber,
+        attemptId: initResult.attemptId,
         redirectUrl: initResult.gatewayUrl,
       });
     } else if (paymentMethod === 'manual_mfs') {
@@ -57,6 +64,7 @@ export async function POST(req: NextRequest) {
         success: true,
         orderId: order.id,
         orderNumber: order.orderNumber,
+        attemptId: initResult.attemptId,
         manualDetails: initResult.manualPaymentDetails,
       });
     } else {
@@ -70,15 +78,34 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * GET /api/checkout/initiate?id=<orderId>
+ * Requires authenticated session (401) and tenant ownership / staff role (403).
+ * If no `id` param is provided, returns all orders belonging to the authenticated customer.
+ */
 export async function GET(req: NextRequest) {
   const orderId = req.nextUrl.searchParams.get('id');
+
   if (!orderId) {
-    return NextResponse.json({ error: 'Order ID is required.' }, { status: 400 });
+    const auth = await authenticateRequest(req);
+    if (!auth.authenticated) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+    const orders = await persistentDB.listOrdersForCustomer(
+      auth.user.id,
+      auth.user.organizationId
+    );
+    return NextResponse.json({ success: true, orders });
   }
 
-  const order = orderStore.get(orderId);
+  const order = await persistentDB.getOrder(orderId);
   if (!order) {
     return NextResponse.json({ error: 'Order not found.' }, { status: 404 });
+  }
+
+  const access = await requireOrderAccess(req, order);
+  if (!access.authorized) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
   }
 
   return NextResponse.json({ success: true, order });

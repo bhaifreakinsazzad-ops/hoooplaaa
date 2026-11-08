@@ -6,15 +6,15 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://localhost:3456',
     channel: 'msedge',
     headless: true,
     viewport: { width: 1440, height: 900 },
   },
   webServer: {
-    command: 'npm.cmd run start',
-    url: 'http://localhost:3000',
-    reuseExistingServer: true,
+    command: 'npx.cmd next start -p 3456',
+    url: 'http://localhost:3456',
+    reuseExistingServer: false,
     timeout: 60000,
   },
 });

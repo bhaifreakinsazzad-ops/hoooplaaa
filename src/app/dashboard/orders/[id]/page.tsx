@@ -49,6 +49,7 @@ export default function OrderWorkspacePage() {
   const [mockFileType, setMockFileType] = useState('image/png');
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [accessDeniedError, setAccessDeniedError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
@@ -58,6 +59,13 @@ export default function OrderWorkspacePage() {
         fetch(`/api/orders/${orderId}/files`),
       ]);
 
+      if (orderRes.status === 401 || orderRes.status === 403) {
+        const errBody = await orderRes.json();
+        setAccessDeniedError(`HTTP ${orderRes.status}: ${errBody.error || 'Access denied.'}`);
+        return;
+      }
+
+      setAccessDeniedError(null);
       const orderData = await orderRes.json();
       const intakeData = await intakeRes.json();
       const filesData = await filesRes.json();
@@ -127,13 +135,16 @@ export default function OrderWorkspacePage() {
     setUploadError(null);
 
     try {
+      // Real 1x1 PNG binary payload in base64 for private vault storage
+      const validPngBase64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
       const res = await fetch(`/api/orders/${orderId}/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName: mockFileName,
-          fileSizeBytes: 1024 * 500, // 500 KB
           mimeType: mockFileType,
+          fileContentBase64: validPngBase64,
         }),
       });
 
@@ -160,8 +171,8 @@ export default function OrderWorkspacePage() {
 
   if (!order) {
     return (
-      <div className="max-w-md mx-auto py-24 text-center space-y-4">
-        <p className="text-xs text-red-600">Order not found.</p>
+      <div className="max-w-md mx-auto py-24 text-center space-y-4" data-testid="order-access-error">
+        <p className="text-xs font-bold text-red-600">{accessDeniedError || 'Order not found.'}</p>
         <Link href="/dashboard" className="px-4 py-2 bg-slate-900 text-white rounded text-xs">
           Return to Dashboard
         </Link>

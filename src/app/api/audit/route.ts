@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuditService } from '@/domain/audit-service';
-import { auditListStore } from '@/domain/store';
+import { persistentDB } from '@/domain/persistent-db';
+import { authenticateRequest, requireRole } from '@/domain/auth-guard';
 
+/**
+ * POST /api/audit
+ * Submits a Pre-Sale Initial Readiness Audit request and awaits database persistence.
+ */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { businessName, websiteOrPageUrl, contactEmail, contactPhone, primaryGoal } = body;
+
+    const auth = await authenticateRequest(req);
+    const customerId = auth.authenticated ? auth.user.id : undefined;
 
     const audit = AuditService.submitPreSaleAudit({
       businessName,
@@ -15,7 +23,7 @@ export async function POST(req: NextRequest) {
       primaryGoal: primaryGoal || 'Business Readiness Review',
     });
 
-    auditListStore.set(audit.id, audit);
+    await persistentDB.saveAuditRequest(audit, customerId);
 
     return NextResponse.json({
       success: true,
@@ -30,9 +38,17 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function GET() {
-  const audits = Array.from(auditListStore.values()).sort(
-    (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
-  );
+/**
+ * GET /api/audit
+ * Confidential audit listing restricted to authenticated staff roles ('admin', 'finance', 'engineer').
+ * Unauthenticated -> 401. Customer -> 403.
+ */
+export async function GET(req: NextRequest) {
+  const auth = await requireRole(req, ['admin', 'finance', 'engineer']);
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  const audits = await persistentDB.listAuditRequests();
   return NextResponse.json({ success: true, audits });
 }

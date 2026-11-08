@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     exclude: ['e2e/**', 'node_modules/**'],
+    fileParallelism: false,
   },
   resolve: {
     alias: {

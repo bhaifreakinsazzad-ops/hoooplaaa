@@ -240,6 +240,7 @@ export interface FileAttachment {
   isPrivate: boolean;
   uploadedAt: string;
   downloadUrl?: string;
+  category?: string;
 }
 
 export interface Deliverable {
@@ -285,6 +286,7 @@ export interface AuditLogEntry {
   entityId: string;
   previousState?: Record<string, unknown>;
   newState?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   ipAddress?: string;
   timestamp: string;
 }

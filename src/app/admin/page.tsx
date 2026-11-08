@@ -28,6 +28,7 @@ export default function AdminPage() {
   const [audits, setAudits] = useState<AuditRequest[]>([]);
   const [catalog, setCatalog] = useState<Service[]>(CANONICAL_SERVICES);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<{ status: number; message: string } | null>(null);
 
   // Specialist assignment state
   const [selectedSpecialist, setSelectedSpecialist] = useState('Senior Growth Specialist');
@@ -39,6 +40,16 @@ export default function AdminPage() {
         fetch('/api/audit'),
       ]);
 
+      if (ordersRes.status === 401 || ordersRes.status === 403) {
+        const errData = await ordersRes.json();
+        setAuthError({
+          status: ordersRes.status,
+          message: errData.error || 'Staff authorization required.',
+        });
+        return;
+      }
+
+      setAuthError(null);
       const ordersData = await ordersRes.json();
       const auditsData = await auditsRes.json();
 
@@ -87,7 +98,6 @@ export default function AdminPage() {
         body: JSON.stringify({
           orderId,
           approved,
-          verifiedByStaffId: 'staff_finance_officer',
         }),
       });
 
@@ -102,6 +112,26 @@ export default function AdminPage() {
       alert(err.message);
     }
   };
+
+  if (authError) {
+    return (
+      <div className="max-w-lg mx-auto px-4 py-20 text-center space-y-4" data-testid="admin-auth-barrier">
+        <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-700 flex items-center justify-center mx-auto">
+          <Lock className="w-6 h-6" />
+        </div>
+        <h1 className="text-xl font-extrabold text-slate-900">
+          HTTP {authError.status} — Staff Authorization Required
+        </h1>
+        <p className="text-xs text-slate-600">{authError.message}</p>
+        <Link
+          href="/login?redirect=/admin"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold"
+        >
+          Sign In as Authorized Staff
+        </Link>
+      </div>
+    );
+  }
 
   const pendingFinanceOrders = orders.filter((o) => o.financialStatus === 'pending_verification');
 
