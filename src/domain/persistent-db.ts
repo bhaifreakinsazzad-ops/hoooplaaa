@@ -411,6 +411,7 @@ class PersistentDatabaseEngine {
         eligibility_snapshot: quote.eligibility,
         status: quote.status,
         quote_hash: quote.termsHash || 'v6_authoritative_hash',
+        claim_token_hash: (quote as any).claimTokenHash || null,
         expires_at: quote.expiresAt,
         payload_json: quote,
         created_at: quote.createdAt,
@@ -431,7 +432,7 @@ class PersistentDatabaseEngine {
 
     const { data, error } = await supabase
       .from('quotes')
-      .select('payload_json, organization_id, customer_id')
+      .select('payload_json, organization_id, customer_id, claim_token_hash')
       .or(`quote_code.eq.${quoteId},id.eq.${quoteUuid}`);
 
     if (error) {
@@ -443,6 +444,8 @@ class PersistentDatabaseEngine {
     const parsed = (typeof row.payload_json === 'string'
       ? JSON.parse(row.payload_json)
       : row.payload_json) as QuoteSnapshot;
+    (parsed as any).claimTokenHash = row.claim_token_hash;
+    return parsed;
 
     return {
       ...parsed,
@@ -660,6 +663,7 @@ class PersistentDatabaseEngine {
     quote: QuoteSnapshot;
     customerId: string;
     organizationId: string;
+    claimToken?: string;
   }): Promise<{ order: Order; isNew: boolean }> {
     const supabase = this.getSupabaseAdminClient();
 
@@ -682,6 +686,7 @@ class PersistentDatabaseEngine {
       p_order_code: orderCode,
       p_order_number: orderNumber,
       p_payload_json: newOrder,
+      p_claim_token: params.claimToken || null,
     });
 
     if (error) {
@@ -699,12 +704,14 @@ class PersistentDatabaseEngine {
   /**
    * Single-Use Private Guest Quote Claiming:
    * Atomically assigns an unauthenticated quote to a customer's organization.
+   * Requires cryptographically secure single-use claimToken verification.
    * Prevents cross-tenant claiming collisions via database locks.
    */
   public async claimGuestQuote(
     quoteId: string,
     customerId: string,
-    organizationId: string
+    organizationId: string,
+    claimToken?: string
   ): Promise<QuoteSnapshot> {
     const supabase = this.getSupabaseAdminClient();
 
@@ -712,6 +719,7 @@ class PersistentDatabaseEngine {
       p_quote_id: quoteId,
       p_customer_id: customerId,
       p_organization_id: organizationId,
+      p_claim_token: claimToken || null,
     });
 
     if (error) {

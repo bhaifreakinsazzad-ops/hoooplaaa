@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS public.quotes (
     eligibility_snapshot JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'priced',
     quote_hash TEXT NOT NULL,
+    claim_token_hash TEXT,
     expires_at TIMESTAMPTZ NOT NULL,
     payload_json JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
@@ -415,24 +416,27 @@ CREATE POLICY quotes_select ON public.quotes
         OR organization_id = public.get_auth_org_id()
         OR customer_id = auth.uid()
         OR public.get_auth_role() IN ('admin', 'finance', 'engineer')
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
     );
 
-CREATE POLICY quotes_insert ON public.quotes
-    FOR INSERT WITH CHECK (true);
+CREATE POLICY quotes_service_mutate ON public.quotes
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
 
--- Orders: Strict tenant isolation (Customers see/create only their own; Staff see/update all)
+-- Orders: Strict tenant isolation (Customers see only their own; Staff see/update all; Mutations through service_role)
 CREATE POLICY orders_customer_select ON public.orders
     FOR SELECT USING (
         organization_id = public.get_auth_org_id()
         OR customer_id = auth.uid()
         OR public.get_auth_role() IN ('admin', 'finance', 'engineer')
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
     );
 
-CREATE POLICY orders_customer_insert ON public.orders
-    FOR INSERT WITH CHECK (
-        organization_id = public.get_auth_org_id()
-        AND customer_id = auth.uid()
-    );
+CREATE POLICY orders_service_mutate ON public.orders
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
 
 CREATE POLICY orders_staff_update ON public.orders
     FOR UPDATE USING (
@@ -442,27 +446,33 @@ CREATE POLICY orders_staff_update ON public.orders
         public.get_auth_role() IN ('admin', 'finance', 'engineer')
     );
 
--- Payments: Customers view own order payments & insert pending_verification only; ONLY Finance/Admin can update
+-- Payments: Customers view own order payments only; Mutation strictly restricted to service_role; Staff can update
 CREATE POLICY payments_select ON public.payments
     FOR SELECT USING (
         order_id IN (SELECT id FROM public.orders WHERE organization_id = public.get_auth_org_id() OR customer_id = auth.uid())
         OR public.get_auth_role() IN ('admin', 'finance', 'engineer')
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
     );
 
-CREATE POLICY payments_customer_insert ON public.payments
-    FOR INSERT WITH CHECK (
-        order_id IN (SELECT id FROM public.orders WHERE customer_id = auth.uid())
-        AND payment_status IN ('initiated', 'pending_verification')
-    );
+CREATE POLICY payments_service_mutate ON public.payments
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
 
 CREATE POLICY payments_finance_update ON public.payments
     FOR UPDATE USING (public.get_auth_role() IN ('finance', 'admin'))
     WITH CHECK (public.get_auth_role() IN ('finance', 'admin'));
 
--- Payment Events: Finance & Admin read/write only
+-- Payment Events: Finance, Admin & service_role only
 CREATE POLICY payment_events_staff_all ON public.payment_events
-    FOR ALL USING (public.get_auth_role() IN ('finance', 'admin'))
-    WITH CHECK (public.get_auth_role() IN ('finance', 'admin'));
+    FOR ALL USING (
+        public.get_auth_role() IN ('finance', 'admin') 
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
+    )
+    WITH CHECK (
+        public.get_auth_role() IN ('finance', 'admin') 
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
+    );
 
 -- Order Intakes: Customers view/submit only for their own order; Staff view all
 CREATE POLICY intakes_select ON public.order_intakes
@@ -525,12 +535,17 @@ CREATE POLICY audit_requests_select ON public.audit_requests
 CREATE POLICY audit_requests_insert ON public.audit_requests
     FOR INSERT WITH CHECK (true);
 
--- Audit Logs: Strictly append-only; read-only for Admin & Finance
+-- Audit Logs: Strictly append-only; read-only for Admin, Finance & service_role; Insert restricted to service_role
 CREATE POLICY audit_select ON public.audit_logs
-    FOR SELECT USING (public.get_auth_role() IN ('admin', 'finance'));
+    FOR SELECT USING (
+        public.get_auth_role() IN ('admin', 'finance') 
+        OR COALESCE(current_setting('request.jwt.claim.role', true), 'anon') = 'service_role'
+    );
 
-CREATE POLICY audit_insert ON public.audit_logs
-    FOR INSERT WITH CHECK (true);
+CREATE POLICY audit_service_mutate ON public.audit_logs
+    FOR ALL TO service_role
+    USING (true)
+    WITH CHECK (true);
 
 -- ==============================================================================
 -- 16. TRANSACTIONAL INTEGRITY, CONCURRENCY CONTROL & RPC STORED FUNCTIONS (V7.1)
@@ -544,6 +559,25 @@ WHERE order_status NOT IN ('cancelled', 'refunded');
 -- Unique attempt code per order to guarantee payment deduplication
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_order_attempt 
 ON public.payments (order_id, attempt_code);
+
+-- Helper Function: Calculate Business Days Delivery Target (Excludes Weekends)
+CREATE OR REPLACE FUNCTION public.add_business_days(start_date TIMESTAMPTZ, num_days INT)
+RETURNS TIMESTAMPTZ AS $$
+DECLARE
+    curr_date TIMESTAMPTZ := start_date;
+    added INT := 0;
+    dow INT;
+BEGIN
+    WHILE added < num_days LOOP
+        curr_date := curr_date + INTERVAL '1 day';
+        dow := EXTRACT(DOW FROM curr_date)::INT;
+        IF dow NOT IN (0, 6) THEN
+            added := added + 1;
+        END IF;
+    END LOOP;
+    RETURN curr_date;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
 
 -- RPC 1: Atomic Payment & Order Settlement Function
 CREATE OR REPLACE FUNCTION public.settle_order_payment_paid(
@@ -564,11 +598,18 @@ DECLARE
     v_staff_uuid UUID := NULL;
     v_intake RECORD;
     v_new_status public.order_status_enum;
+    v_turnaround_days INT := 2;
     v_sla_started TIMESTAMPTZ := NULL;
     v_sla_deadline TIMESTAMPTZ := NULL;
     v_now TIMESTAMPTZ := timezone('utc', now());
     v_updated_order_json JSONB;
 BEGIN
+    -- Authorization check (service_role or finance/admin staff)
+    IF COALESCE(current_setting('request.jwt.claim.role', true), 'anon') <> 'service_role' 
+       AND (public.get_auth_role() NOT IN ('finance', 'admin')) THEN
+        RAISE EXCEPTION 'Permission denied: privileged function restricted to service_role or finance/admin staff';
+    END IF;
+
     -- 1. Resolve order UUID
     IF p_order_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
         v_order_uuid := p_order_id::uuid;
@@ -626,12 +667,29 @@ BEGIN
         END IF;
     END IF;
 
-    -- 7. Check if intake was already completed before payment verification
+    -- 7. Service-specific SLA calculation: Determine maximum turnaround business days from quote snapshot
+    SELECT COALESCE(MAX(sc.turnaround_days), 2) INTO v_turnaround_days
+    FROM jsonb_array_elements(
+        CASE 
+            WHEN jsonb_typeof(v_order.quote_snapshot->'items') = 'array' THEN v_order.quote_snapshot->'items'
+            WHEN jsonb_typeof(v_order.quote_snapshot) = 'array' THEN v_order.quote_snapshot
+            ELSE '[]'::jsonb
+        END
+    ) AS elem
+    JOIN public.service_catalog sc ON sc.sku = elem->>'sku';
+
+    IF v_turnaround_days IS NULL OR v_turnaround_days < 1 THEN
+        v_turnaround_days := 2;
+    END IF;
+
+    -- Check if intake was already completed before payment verification
     SELECT * INTO v_intake FROM public.order_intakes WHERE order_id = v_order_uuid;
-    IF v_intake.id IS NOT NULL THEN
+
+    -- SLA starts only when payment is verified AND the order's intake is marked completed
+    IF v_intake.id IS NOT NULL AND v_order.intake_status = 'completed' THEN
         v_new_status := 'ready_for_fulfillment'::public.order_status_enum;
         v_sla_started := v_now;
-        v_sla_deadline := v_now + INTERVAL '3 days';
+        v_sla_deadline := public.add_business_days(v_now, v_turnaround_days);
     ELSE
         v_new_status := 'awaiting_requirements'::public.order_status_enum;
         v_sla_started := NULL;
@@ -744,7 +802,8 @@ CREATE OR REPLACE FUNCTION public.convert_quote_to_active_order(
     p_organization_id UUID,
     p_order_code TEXT,
     p_order_number TEXT,
-    p_payload_json JSONB
+    p_payload_json JSONB,
+    p_claim_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -757,6 +816,12 @@ DECLARE
     v_now TIMESTAMPTZ := timezone('utc', now());
     v_created_order RECORD;
 BEGIN
+    -- Authorization check (service_role only)
+    IF COALESCE(current_setting('request.jwt.claim.role', true), 'anon') <> 'service_role' 
+       AND (public.get_auth_role() NOT IN ('admin', 'finance')) THEN
+        RAISE EXCEPTION 'Permission denied: privileged function restricted to service_role';
+    END IF;
+
     -- 1. Resolve quote UUID
     IF p_quote_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
         v_quote_uuid := p_quote_id::uuid;
@@ -779,11 +844,18 @@ BEGIN
         RAISE EXCEPTION 'Cannot convert quote: Quote has expired';
     END IF;
 
-    -- 4. Guest Claiming (Single-use & private)
+    -- 4. Guest Claiming (Single-use capability token check)
     IF v_quote.customer_id IS NULL THEN
+        IF v_quote.claim_token_hash IS NOT NULL THEN
+            IF p_claim_token IS NULL OR encode(sha256(p_claim_token::bytea), 'hex') <> v_quote.claim_token_hash THEN
+                RAISE EXCEPTION 'Unauthorized: Valid claim token required to claim guest quote';
+            END IF;
+        END IF;
+
         UPDATE public.quotes 
         SET customer_id = p_customer_id, 
-            organization_id = p_organization_id 
+            organization_id = p_organization_id,
+            claim_token_hash = NULL
         WHERE id = v_quote_uuid AND customer_id IS NULL;
     ELSIF v_quote.customer_id <> p_customer_id THEN
         RAISE EXCEPTION 'Cross-tenant violation: Quote belongs to another customer';
@@ -854,7 +926,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.claim_guest_quote(
     p_quote_id TEXT,
     p_customer_id UUID,
-    p_organization_id UUID
+    p_organization_id UUID,
+    p_claim_token TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -866,6 +939,13 @@ DECLARE
     v_now TIMESTAMPTZ := timezone('utc', now());
     v_updated_quote_json JSONB;
 BEGIN
+    -- Authorization check (service_role only)
+    IF current_setting('request.jwt.claim.role', true) <> 'service_role' 
+       AND COALESCE(auth.role(), '') <> 'service_role' 
+       AND (public.get_auth_role() NOT IN ('finance', 'admin')) THEN
+        RAISE EXCEPTION 'Permission denied: privileged function restricted to service_role';
+    END IF;
+
     IF p_quote_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
         v_quote_uuid := p_quote_id::uuid;
     ELSE
@@ -889,6 +969,13 @@ BEGIN
         RAISE EXCEPTION 'Cross-tenant violation: Quote already belongs to another customer';
     END IF;
 
+    -- Validate single-use capability token
+    IF v_quote.claim_token_hash IS NOT NULL THEN
+        IF p_claim_token IS NULL OR encode(sha256(p_claim_token::bytea), 'hex') <> v_quote.claim_token_hash THEN
+            RAISE EXCEPTION 'Unauthorized: Invalid or missing quote claim token';
+        END IF;
+    END IF;
+
     v_updated_quote_json := jsonb_set(
         jsonb_set(
             v_quote.payload_json,
@@ -902,6 +989,7 @@ BEGIN
     UPDATE public.quotes
     SET customer_id = p_customer_id,
         organization_id = p_organization_id,
+        claim_token_hash = NULL,
         payload_json = v_updated_quote_json
     WHERE id = v_quote_uuid;
 
@@ -911,3 +999,38 @@ BEGIN
     );
 END;
 $$;
+
+-- ==============================================================================
+-- 17. DATABASE SECURITY, PRIVILEGED RPC HARDENING & ACCESS CONTROL (V7.2)
+-- ==============================================================================
+
+-- Revoke execution of SECURITY DEFINER stored procedures from public/unauthenticated/client roles
+REVOKE EXECUTE ON FUNCTION public.settle_order_payment_paid(TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.settle_order_payment_paid(TEXT, TEXT, TEXT, TEXT, JSONB) TO service_role;
+
+REVOKE EXECUTE ON FUNCTION public.convert_quote_to_active_order(UUID, TEXT, UUID, UUID, TEXT, TEXT, JSONB, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.convert_quote_to_active_order(UUID, TEXT, UUID, UUID, TEXT, TEXT, JSONB, TEXT) TO service_role;
+
+REVOKE EXECUTE ON FUNCTION public.claim_guest_quote(TEXT, UUID, UUID, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_guest_quote(TEXT, UUID, UUID, TEXT) TO service_role;
+
+-- Revoke mutation rights on authoritative financial tables from anonymous and ordinary customer clients
+REVOKE INSERT, UPDATE, DELETE ON public.quotes FROM PUBLIC, anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.orders FROM PUBLIC, anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.payments FROM PUBLIC, anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.payment_events FROM PUBLIC, anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.audit_logs FROM PUBLIC, anon, authenticated;
+
+-- Grant trusted mutation privileges exclusively to service_role (authoritative server backend)
+GRANT ALL ON public.quotes TO service_role;
+GRANT ALL ON public.orders TO service_role;
+GRANT ALL ON public.payments TO service_role;
+GRANT ALL ON public.payment_events TO service_role;
+GRANT ALL ON public.audit_logs TO service_role;
+
+-- Grant read privileges to authenticated users (governed by RLS policies)
+GRANT SELECT ON public.quotes TO authenticated;
+GRANT SELECT ON public.orders TO authenticated;
+GRANT SELECT ON public.payments TO authenticated;
+GRANT SELECT ON public.payment_events TO authenticated;
+GRANT SELECT ON public.audit_logs TO authenticated;

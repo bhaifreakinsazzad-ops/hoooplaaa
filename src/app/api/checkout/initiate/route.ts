@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { quoteId, paymentMethod } = body;
+    const { quoteId, paymentMethod, claimToken } = body;
 
     if (!quoteId || !paymentMethod) {
       return NextResponse.json(
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Enforce Quote Ownership Check
+    // 2. Enforce Quote Ownership & Single-Use Capability Claim Check
     const quoteCustomerId = (quote as any).customerId;
     const quoteOrgId = (quote as any).organizationId;
     if (quoteCustomerId || quoteOrgId) {
@@ -70,8 +70,8 @@ export async function POST(req: NextRequest) {
         );
       }
     } else {
-      // Quote was created by guest; single-use, concurrency-safe claiming for this customer
-      await persistentDB.claimGuestQuote(quote.id, auth.user.id, auth.user.organizationId);
+      // Quote was created by guest; single-use, cryptographically verified capability claiming
+      await persistentDB.claimGuestQuote(quote.id, auth.user.id, auth.user.organizationId, claimToken);
     }
 
     if (!quote.eligibility.canSelfCheckout) {
@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
       quote,
       customerId: auth.user.id,
       organizationId: auth.user.organizationId,
+      claimToken,
     });
 
     if (order.financialStatus === 'paid') {

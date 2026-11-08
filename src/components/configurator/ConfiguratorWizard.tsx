@@ -806,7 +806,18 @@ export function ConfiguratorWizard() {
                 {serverQuote.eligibility.canSelfCheckout ? (
                   <button
                     type="button"
-                    onClick={() => router.push(`/checkout/${serverQuote.id}`)}
+                    onClick={() => {
+                      if (serverQuote.claimToken) {
+                        try {
+                          localStorage.setItem(`claim_${serverQuote.id}`, serverQuote.claimToken);
+                        } catch {
+                          // ignore storage errors
+                        }
+                        router.push(`/checkout/${serverQuote.id}?claimToken=${serverQuote.claimToken}`);
+                      } else {
+                        router.push(`/checkout/${serverQuote.id}`);
+                      }
+                    }}
                     disabled={!agreedToTerms}
                     className="px-6 py-3 rounded-xl bg-gradient-to-r from-hoooplaaa-gold-500 to-hoooplaaa-gold-600 hover:from-hoooplaaa-gold-400 hover:to-hoooplaaa-gold-500 disabled:opacity-50 text-hoooplaaa-navy-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-gold-glow transition"
                   >

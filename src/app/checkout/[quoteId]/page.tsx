@@ -145,6 +145,14 @@ export default function CheckoutPage() {
     setError(null);
 
     try {
+      const claimToken =
+        (quote as any)?.claimToken ||
+        (typeof window !== 'undefined'
+          ? new URLSearchParams(window.location.search).get('claimToken') ||
+            localStorage.getItem(`claim_${quoteId}`) ||
+            undefined
+          : undefined);
+
       const res = await fetch('/api/checkout/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -152,6 +160,7 @@ export default function CheckoutPage() {
           quoteId,
           customerEmail: sessionUser.email,
           paymentMethod,
+          claimToken,
         }),
       });
 

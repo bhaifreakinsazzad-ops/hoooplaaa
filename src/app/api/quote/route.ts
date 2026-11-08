@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { calculateServerQuote } from '@/domain/pricing-engine';
 import { persistentDB } from '@/domain/persistent-db';
 import { authenticateRequest } from '@/domain/auth-guard';
@@ -35,10 +36,18 @@ export async function POST(req: NextRequest) {
     const customerId = auth.authenticated ? auth.user.id : undefined;
     const organizationId = auth.authenticated ? auth.user.organizationId : undefined;
 
+    // Cryptographic single-use capability token for guest quote claiming
+    const claimToken = !auth.authenticated ? crypto.randomBytes(32).toString('hex') : undefined;
+    const claimTokenHash = claimToken
+      ? crypto.createHash('sha256').update(claimToken).digest('hex')
+      : undefined;
+
     const enrichedQuote = {
       ...quote,
       customerId,
       organizationId,
+      claimToken,
+      claimTokenHash,
     };
 
     // Await durable relational persistence

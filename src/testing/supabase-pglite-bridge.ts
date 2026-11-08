@@ -63,6 +63,11 @@ export async function getInitializedTestPostgres(): Promise<PGlite> {
           SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
         $$ LANGUAGE sql STABLE;
 
+        CREATE OR REPLACE FUNCTION auth.role()
+        RETURNS TEXT AS $$
+          SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon')::TEXT;
+        $$ LANGUAGE sql STABLE;
+
         CREATE SCHEMA IF NOT EXISTS storage;
         CREATE TABLE IF NOT EXISTS storage.buckets (
           id TEXT PRIMARY KEY,
@@ -453,9 +458,92 @@ export async function supabasePgliteFetch(
   // 3. SUPABASE POSTGREST (/rest/v1/<table> & /rest/v1/rpc/<function>)
   // ---------------------------------------------------------------------------
   if (url.pathname.startsWith('/rest/v1/')) {
+    const headers = new Headers(init?.headers);
+    const authHeader = headers.get('Authorization') || headers.get('authorization') || '';
+    const apiKey = headers.get('apikey') || headers.get('ApiKey') || '';
+
+    // Authoritative caller role & user resolution for database security testing
+    let callerRole = 'anon';
+    let callerUserId = '';
+
+    if (
+      apiKey === 'test-service-role-key' ||
+      apiKey === process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      authHeader === 'Bearer test-service-role-key' ||
+      authHeader === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` ||
+      authHeader.includes('service_role')
+    ) {
+      callerRole = 'service_role';
+    } else if (authHeader.startsWith('Bearer ') || authHeader.startsWith('bearer ')) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (token === 'test-anon-key' || token === process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || token === 'anon') {
+        callerRole = 'anon';
+      } else if (token.startsWith('mock-jwt-customer-')) {
+        callerRole = 'customer';
+        callerUserId = token.replace('mock-jwt-customer-', '');
+      } else if (token.startsWith('mock-jwt-finance-')) {
+        callerRole = 'finance';
+        callerUserId = token.replace('mock-jwt-finance-', '');
+      } else if (token.startsWith('mock-jwt-admin-')) {
+        callerRole = 'admin';
+        callerUserId = token.replace('mock-jwt-admin-', '');
+      } else if (token.startsWith('mock-jwt-staff-')) {
+        callerRole = 'engineer';
+        callerUserId = token.replace('mock-jwt-staff-', '');
+      } else {
+        const found = globalState.activeTokens.get(token);
+        if (found) {
+          callerRole = 'authenticated';
+          callerUserId = found;
+        } else {
+          const m = token.match(/^sb_jwt_([0-9a-f-]{36})_/i);
+          if (m) {
+            callerRole = 'authenticated';
+            callerUserId = m[1];
+          } else {
+            callerRole = 'authenticated';
+            callerUserId = token;
+          }
+        }
+      }
+    }
+
+    // Set PostgreSQL transaction session settings for PGlite
+    try {
+      if (callerUserId) {
+        await pg.query(`SELECT set_config('request.jwt.claim.sub', $1, false), set_config('request.jwt.claim.role', $2, false);`, [callerUserId, callerRole]);
+      } else {
+        await pg.query(`SELECT set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', $1, false);`, [callerRole]);
+      }
+    } catch {
+      // non-fatal
+    }
+
     // 3a. RPC STORED PROCEDURE CALLS (/rest/v1/rpc/<fnName>)
     if (url.pathname.startsWith('/rest/v1/rpc/')) {
       const fnName = url.pathname.replace('/rest/v1/rpc/', '').replace(/\/$/, '');
+
+      // Priority 0: Lock down privileged SECURITY DEFINER RPC functions from client execution
+      const privilegedRpcFunctions = [
+        'settle_order_payment_paid',
+        'convert_quote_to_active_order',
+        'claim_guest_quote',
+      ];
+
+      if (privilegedRpcFunctions.includes(fnName)) {
+        if (callerRole !== 'service_role') {
+          return Response.json(
+            {
+              code: '42501',
+              message: `permission denied for function ${fnName}`,
+              details: 'Privileged database function is restricted to service_role',
+              hint: 'Invoke this operation via authoritative server-side endpoints.',
+            },
+            { status: 403 }
+          );
+        }
+      }
+
       const rawBody = String(init?.body || '{}');
       const rpcArgs = JSON.parse(rawBody || '{}');
 
@@ -498,7 +586,22 @@ export async function supabasePgliteFetch(
       return Response.json({ status: 'ok' }, { status: 200 });
     }
 
-    const headers = new Headers(init?.headers);
+    // Priority 1: Prevent client-side manipulation of financial records
+    const protectedTables = ['quotes', 'orders', 'payments', 'payment_events', 'audit_logs'];
+    if (['POST', 'PATCH', 'DELETE'].includes(method) && protectedTables.includes(table)) {
+      if (callerRole !== 'service_role') {
+        return Response.json(
+          {
+            code: '42501',
+            message: `permission denied for table ${table}`,
+            details: `Direct client mutation on ${table} is forbidden. Must use authoritative server routes.`,
+            hint: 'Use the official server endpoints to generate quotes, initiate orders, or record payments.',
+          },
+          { status: 403 }
+        );
+      }
+    }
+
     const prefer = headers.get('Prefer') || headers.get('prefer') || '';
     const accept = headers.get('Accept') || headers.get('accept') || '';
     const isSingle = accept.includes('application/vnd.pgrst.object+json');

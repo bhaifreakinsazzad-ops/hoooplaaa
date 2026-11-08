@@ -8,6 +8,54 @@ import {
 } from './types';
 import crypto from 'crypto';
 
+/**
+ * Adds business days to a given start date (skipping Saturday and Sunday).
+ */
+export function addBusinessDays(startDate: Date, days: number): Date {
+  const result = new Date(startDate);
+  let added = 0;
+  while (added < days) {
+    result.setDate(result.getDate() + 1);
+    const dow = result.getDay();
+    if (dow !== 0 && dow !== 6) {
+      added++;
+    }
+  }
+  return result;
+}
+
+/**
+ * Calculates authoritative delivery turnaround business days based on purchased SKUs.
+ * HI-BUNDLE-3: 4 business days
+ * HI-SET-META: 2 business days
+ * HI-SET-GOOGLE: 2 business days
+ * HI-SET-LINKEDIN: 1 business day
+ * HI-ADD-WA / PIXEL / CREATIVE: 2 business days
+ */
+export function getServiceTurnaroundBusinessDays(items: { sku: string }[]): number {
+  const SKU_TURNAROUND: Record<string, number> = {
+    'HI-BUNDLE-3': 4,
+    'HI-SET-META': 2,
+    'HI-SET-GOOGLE': 2,
+    'HI-SET-LINKEDIN': 1,
+    'HI-ADD-WA': 2,
+    'HI-ADD-PIXEL': 2,
+    'HI-ADD-CREATIVE': 2,
+  };
+
+  if (!items || items.length === 0) return 2;
+  if (items.every((i) => SKU_TURNAROUND[i.sku] === 1)) return 1;
+
+  let maxDays = 1;
+  for (const item of items) {
+    const days = SKU_TURNAROUND[item.sku] || 2;
+    if (days > maxDays) {
+      maxDays = days;
+    }
+  }
+  return maxDays;
+}
+
 export class OrderService {
   private static orderSequence = 1000;
 
@@ -107,12 +155,13 @@ export class OrderService {
 
     if (updated.financialStatus === 'paid') {
       updated.status = 'ready_for_fulfillment';
-      // Official SLA clock starts now!
-      updated.slaStartedAt = new Date().toISOString();
-      const targetDays = 3; // Standard bundle target
-      const targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + targetDays);
+      // Official SLA clock starts now with service-specific business-day delivery targets
+      const now = new Date();
+      updated.slaStartedAt = now.toISOString();
+      const targetBusinessDays = getServiceTurnaroundBusinessDays(updated.items || []);
+      const targetDate = addBusinessDays(now, targetBusinessDays);
       updated.deliveryTargetDate = targetDate.toISOString();
+      (updated as any).turnaroundBusinessDays = targetBusinessDays;
     } else {
       // Order paid status is pending, stay in awaiting_payment or payment_under_review
       // SLA cannot start yet
