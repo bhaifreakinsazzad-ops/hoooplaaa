@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateServerQuote, evaluateEligibility } from '../src/domain/pricing-engine';
+import { findServiceBySku } from '../src/domain/catalog';
 
 describe('Server Pricing & Eligibility Engine Tests (P0 Test Matrix)', () => {
   // Test 1: Visitor chooses Meta only -> ৳1,500 one time
@@ -179,5 +180,27 @@ describe('Server Pricing & Eligibility Engine Tests (P0 Test Matrix)', () => {
     expect(
       quote.eligibility.flags.some((f) => f.code === 'META_RESTRICTION_MANUAL_SCOPE')
     ).toBe(true);
+  });
+
+  // Test 10: Owner-Confirmed Delivery Timelines & Pricing Registry Reconciliation
+  it('10. Reconciles all 7 live SKUs against owner-approved pricing and delivery targets (HOOOPLAAA_Service_Registry_2026-11-08.csv)', () => {
+    const expectedRegistry = [
+      { sku: 'HI-SET-META', priceMinor: 150000, deliveryTarget: '1–2 business days' },
+      { sku: 'HI-SET-GOOGLE', priceMinor: 150000, deliveryTarget: '1–2 days submission' },
+      { sku: 'HI-SET-LINKEDIN', priceMinor: 150000, deliveryTarget: '1 business day' },
+      { sku: 'HI-BUNDLE-3', priceMinor: 300000, deliveryTarget: '2–4 business days' },
+      { sku: 'HI-ADD-WA', priceMinor: 169000, deliveryTarget: '2 business days' },
+      { sku: 'HI-ADD-PIXEL', priceMinor: 150000, deliveryTarget: 'Scope dependent (1–2 business days standard)' },
+      { sku: 'HI-ADD-CREATIVE', priceMinor: 99000, deliveryTarget: '1–2 business days' },
+    ];
+
+    for (const expected of expectedRegistry) {
+      const item = findServiceBySku(expected.sku);
+      expect(item).toBeDefined();
+      expect(item?.basePriceMinor).toBe(expected.priceMinor);
+      expect(item?.deliveryTarget).toBe(expected.deliveryTarget);
+      expect(item?.ownerConfirmedPrice).toBe(true);
+      expect(item?.checkoutEnabled).toBe(true);
+    }
   });
 });

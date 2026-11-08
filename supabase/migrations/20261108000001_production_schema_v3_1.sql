@@ -93,27 +93,30 @@ CREATE TABLE IF NOT EXISTS public.service_catalog (
     original_price_bdt NUMERIC(10, 2),
     is_active BOOLEAN NOT NULL DEFAULT true,
     is_base_package BOOLEAN NOT NULL DEFAULT true,
-    turnaround_days INT NOT NULL DEFAULT 5,
+    turnaround_days INT NOT NULL DEFAULT 2,
+    delivery_target TEXT NOT NULL DEFAULT '1–2 business days',
     features JSONB NOT NULL DEFAULT '[]'::jsonb,
     prerequisites JSONB NOT NULL DEFAULT '[]'::jsonb,
     deliverables JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
 );
 
--- Seed confirmed setup prices
-INSERT INTO public.service_catalog (sku, title, short_description, category, base_price_bdt, base_price_usd, original_price_bdt, is_base_package, turnaround_days)
+-- Seed confirmed setup prices & owner-approved delivery timelines (HOOOPLAAA_Service_Registry_2026-11-08.csv)
+INSERT INTO public.service_catalog (sku, title, short_description, category, base_price_bdt, base_price_usd, original_price_bdt, is_base_package, turnaround_days, delivery_target)
 VALUES
-    ('SETUP-META-BUSINESS', 'Meta Business Setup', 'Meta Business Manager portfolio structure, verified domain linkage, asset delegation, and zero-password partner rights.', 'Paid Social Foundation', 1500.00, 14.00, NULL, true, 4),
-    ('SETUP-GOOGLE-BUSINESS', 'Google Business Setup', 'Google Business Profile claiming, physical address verification, Google Ads Manager CID MCC linking, and local asset hygiene.', 'Local & Search Presence', 1500.00, 14.00, NULL, true, 4),
-    ('SETUP-LINKEDIN-COMPANY', 'LinkedIn Company Page Setup', 'B2B Company page configuration, executive delegation, Insight Tag container link, and Campaign Manager structure.', 'B2B Social Infrastructure', 1500.00, 14.00, NULL, true, 4),
-    ('SETUP-OMNI-3PLATFORM', 'Complete 3-Platform Setup', 'Omnichannel architecture covering Meta, Google, and LinkedIn with unified naming governance and cross-network delegation.', 'Omnichannel Suite', 3000.00, 28.00, 4500.00, true, 7),
-    ('ADDON-WHATSAPP-AUTOMATION', 'WhatsApp Automation Setup', 'Meta Cloud API WhatsApp Business webhook connection, quick-replies, catalog integration, and automated routing.', 'Conversational Add-on', 1690.00, 16.00, NULL, false, 3),
-    ('ADDON-META-PIXEL-TRACKING', 'Meta Pixel Tracking Setup', 'Server-side CAPI Gateway, Google Tag Manager container, deduplication token, and standard high-intent purchase events.', 'Technical Tracking Add-on', 1500.00, 14.00, NULL, false, 3),
-    ('ADDON-BASIC-AD-CREATIVE', 'Basic Professional Ad Creative', '3 battle-tested direct response visual creative concepts with persuasive copywriting headlines and asset specs.', 'Creative Add-on', 990.00, 9.00, NULL, false, 2)
+    ('HI-SET-META', 'Meta Business Setup', 'Meta Business Manager portfolio structure, verified domain linkage, asset delegation, and zero-password partner rights.', 'Paid Social Foundation', 1500.00, 14.00, NULL, true, 2, '1–2 business days'),
+    ('HI-SET-GOOGLE', 'Google Business Setup', 'Google Business Profile claiming, physical address verification, Google Ads Manager CID MCC linking, and local asset hygiene.', 'Local & Search Presence', 1500.00, 14.00, NULL, true, 2, '1–2 days submission'),
+    ('HI-SET-LINKEDIN', 'LinkedIn Company Page Setup', 'B2B Company page configuration, executive delegation, Insight Tag container link, and Campaign Manager structure.', 'B2B Social Infrastructure', 1500.00, 14.00, NULL, true, 1, '1 business day'),
+    ('HI-BUNDLE-3', 'Complete 3-Platform Business Setup', 'Omnichannel architecture covering Meta, Google, and LinkedIn with unified naming governance and cross-network delegation.', 'Omnichannel Suite', 3000.00, 28.00, 4500.00, true, 4, '2–4 business days'),
+    ('HI-ADD-WA', 'WhatsApp Automation Setup', 'Meta Cloud API WhatsApp Business webhook connection, quick-replies, catalog integration, and automated routing.', 'Conversational Add-on', 1690.00, 16.00, NULL, false, 2, '2 business days'),
+    ('HI-ADD-PIXEL', 'Meta Pixel Tracking Setup', 'Standard event tracking for website visitors, leads, and purchases with Meta Pixel Helper verification.', 'Technical Tracking Add-on', 1500.00, 14.00, NULL, false, 2, 'Scope dependent (1–2 business days standard)'),
+    ('HI-ADD-CREATIVE', 'Professional Ad Creative (Basic Static)', 'High-converting bespoke static visual design concept with multi-placement adaptation and headline copywriting.', 'Creative Add-on', 990.00, 9.00, NULL, false, 2, '1–2 business days')
 ON CONFLICT (sku) DO UPDATE SET
     base_price_bdt = EXCLUDED.base_price_bdt,
     base_price_usd = EXCLUDED.base_price_usd,
-    original_price_bdt = EXCLUDED.original_price_bdt;
+    original_price_bdt = EXCLUDED.original_price_bdt,
+    turnaround_days = EXCLUDED.turnaround_days,
+    delivery_target = EXCLUDED.delivery_target;
 
 -- 6. AUTHORITATIVE QUOTATIONS
 CREATE TABLE IF NOT EXISTS public.quotes (
