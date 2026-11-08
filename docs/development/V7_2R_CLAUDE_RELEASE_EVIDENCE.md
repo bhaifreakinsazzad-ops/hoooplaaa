@@ -68,3 +68,17 @@ Test layers: unit; PGlite PostgreSQL 16 with real `anon/authenticated/service_ro
 - GitHub reports **PR #2 is already merged and closed** (its head was `6478c43`, merged into `main`), so it cannot be updated. A new PR from this branch to `main` is needed. The push recreated the branch on the remote.
 - GitHub Actions run https://github.com/bhaifreakinsazzad-ops/hoooplaaa/actions/runs/42527698608 on `ca34fc1`: **completed / success** (tsc, ESLint, Vitest, build, Playwright all green on ubuntu).
 - Gate 14: PASS for remote SHA + CI; PR #2 update N/A (merged) — new PR pending owner go-ahead.
+
+## Post-merge staging cutover — status 2026-11-09
+- `origin/main` = `e8ce915` (PR #2 and #3 merged). Local `main` fast-forwarded to it; work continues on `fix/test-bridge-isolation` cut from it.
+- **Code change (gate 12):** `src/domain/persistent-db.ts` no longer statically imports `src/testing/*`; the PGlite bridge is lazy-loaded and refused whenever `VERCEL`, `VERCEL_ENV`, or `APP_ENV=staging|production` is set. New `tests/test-code-isolation.test.ts` (3 tests). After the change: tsc clean, ESLint 0 errors, Vitest **84/84**, build OK, Playwright **4/4**. Note the bridge chunk still exists in the server build output but is unreachable without `SUPABASE_TEST_BRIDGE=true` and a non-deployed environment.
+- The directive file `HOOOPLAAA_CLAUDE_CODE_POST_MERGE_STAGING_CUTOVER_2026-11-09.md` was **not found** on this machine (not in the repo or Downloads); the numbered objectives in the chat message were followed instead.
+- **BLOCKED — Supabase staging (gates 15–17):** no Supabase CLI, no Supabase connector in this session, and `.env.local` holds only placeholder anon/service keys. The project `aqmyqezuoscpgqwtvblu` exists (`/rest/v1/` and `/auth/v1/health` answer HTTP 401 without a key). Migration state, grants, Auth, RLS, Storage were NOT inspected. No schema change was attempted.
+- **BLOCKED — Vercel Preview + remote E2E (gates 18–19):** no Vercel CLI/connector/credentials.
+- **BLOCKED — SSLCOMMERZ sandbox (gate 20):** store id/password are placeholders.
+- Classification unchanged: `LOCAL_VERIFIED_REMOTE_BLOCKED`.
+
+### Smallest actions to unblock
+1. Supabase: create/identify an **empty staging** project; run `npx supabase login` (or add a Supabase connector) and `npx supabase link`; share nothing in chat. Then I apply the 3 migrations in order and run `has_function_privilege`, anon/customer negative PostgREST, Storage and Auth checks.
+2. Vercel: `npx vercel login` + `vercel link` for the HOOOPLAAA project (or add the Vercel connector); set Preview env vars in the Vercel dashboard (`APP_ENV=staging`, public Supabase URL/anon key, server-only service key, SSLCOMMERZ sandbox ids), `SUPABASE_TEST_BRIDGE` unset.
+3. Provide SSLCOMMERZ sandbox store credentials via the Vercel dashboard (not chat).
