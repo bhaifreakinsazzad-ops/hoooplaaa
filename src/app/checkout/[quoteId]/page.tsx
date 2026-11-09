@@ -104,8 +104,8 @@ export default function CheckoutPage() {
         throw new Error('Email address and password are required.');
       }
 
-      if (authMode === 'register' && authPassword.length < 8) {
-        throw new Error('Password must be at least 8 characters long for security.');
+      if (authMode === 'register' && authPassword.length < 10) {
+        throw new Error('Password must be at least 10 characters long for security.');
       }
 
       const res = await fetch('/api/auth/session', {
@@ -123,6 +123,13 @@ export default function CheckoutPage() {
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed. Please check your credentials.');
+      }
+
+      if (data.requiresEmailConfirmation) {
+        setAuthMode('signin');
+        setAuthPassword('');
+        setAuthError(data.message || 'Account created. Confirm your email address, then sign in.');
+        return;
       }
 
       setSessionUser(data.user);
@@ -366,7 +373,7 @@ export default function CheckoutPage() {
                           type="password"
                           value={authPassword}
                           onChange={(e) => setAuthPassword(e.target.value)}
-                          placeholder={authMode === 'register' ? 'Minimum 8 characters' : 'Your account password'}
+                          placeholder={authMode === 'register' ? 'Minimum 10 characters' : 'Your account password'}
                           className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900"
                           required
                         />
