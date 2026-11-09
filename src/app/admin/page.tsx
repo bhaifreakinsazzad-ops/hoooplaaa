@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CANONICAL_SERVICES } from '@/domain/catalog';
+import QaDeliveryPanel from '@/components/admin/QaDeliveryPanel';
 import { Order, AuditRequest, Service } from '@/domain/types';
 import {
   ShieldCheck,
@@ -74,7 +75,7 @@ export default function AdminPage() {
         body: JSON.stringify({
           orderId,
           action,
-          specialistId: 'staff_specialist_01',
+          // The server assigns the signed-in staff member; only the display name is chosen here.
           specialistName: selectedSpecialist,
         }),
       });
@@ -324,13 +325,6 @@ export default function AdminPage() {
                         Submit for QA Review
                       </button>
 
-                      <button
-                        onClick={() => handleOrderAction(ord.id, 'deliver')}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-xs font-semibold"
-                      >
-                        Deliver & Post Handover
-                      </button>
-
                       <Link
                         href={`/dashboard/orders/${ord.id}`}
                         className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50 ml-auto"
@@ -338,6 +332,9 @@ export default function AdminPage() {
                         Inspect Workspace
                       </Link>
                     </div>
+                    {ord.status === 'qa_review' && (
+                      <QaDeliveryPanel orderId={ord.id} onChanged={loadAdminData} />
+                    )}
                   </div>
                 );
               })}

@@ -147,7 +147,8 @@ export default function OrderWorkspacePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           businessName: order?.quoteSnapshot.businessName || 'My Business',
-          contactEmail: sessionUser?.email || order?.customerUserId || '',
+          // The server uses the signed-in account email for customers; never send an id as an email.
+          contactEmail: sessionUser?.email || '',
           contactWhatsApp,
           targetAudience: audience,
           brandColors,
@@ -407,7 +408,10 @@ export default function OrderWorkspacePage() {
               <div className="space-y-0.5">
                 <div className="font-bold text-xs text-slate-900">Quality Assurance & Handover</div>
                 <p className="text-[11px] text-slate-500">
-                  Includes admin role verification and post-sale detailed audit report.
+                  Staff QA reviews each deliverable file against your purchased scope before it is released to you.
+                  {order.items.some((i) => i.scopeSnapshot.inclusions.some((inc) => /post-sale detailed/i.test(inc)))
+                    ? ' Your package also includes the complimentary post-sale detailed audit listed in your scope.'
+                    : ''}
                 </p>
               </div>
             </div>
@@ -618,14 +622,16 @@ export default function OrderWorkspacePage() {
                   <div key={f.id} className="p-3.5 flex justify-between items-center">
                     <div className="space-y-0.5">
                       <div className="font-semibold text-slate-900">{f.fileName}</div>
-                      <div className="font-mono text-[10px] text-slate-500">{f.storagePath}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {f.category === 'deliverable' ? 'Delivered file' : 'Your uploaded asset'}
+                      </div>
                     </div>
                     <div className="text-right flex items-center gap-2">
                       <span className="text-[11px] text-slate-500">
                         {(f.fileSizeBytes / 1024).toFixed(0)} KB
                       </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
-                        Private / Verified
+                        Private · SHA-256 recorded
                       </span>
                       <a
                         href={`/api/orders/${orderId}/files?download=${f.id}`}
@@ -651,7 +657,7 @@ export default function OrderWorkspacePage() {
             <div>
               <h2 className="text-base font-bold text-slate-900">Deliverables & Handover Protocol</h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Review completed setup assets, QA certificate, and accept handover.
+                Files released here have passed a recorded QA review. Review them, then accept handover.
               </p>
             </div>
             {order?.status === 'accepted' ? (
@@ -712,14 +718,12 @@ export default function OrderWorkspacePage() {
           {/* Deliverables List */}
           <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
             <div className="bg-slate-100 px-4 py-2.5 font-bold text-slate-700 flex justify-between">
-              <span>Deliverable Item / Evidence Pack</span>
+              <span>Delivered File</span>
               <span>QA Status</span>
             </div>
             {deliverables.length === 0 ? (
               <div className="p-6 text-center text-slate-400 text-xs">
-                {order?.status === 'delivered' || order?.status === 'accepted'
-                  ? 'Setup package delivered. Handover evidence pack is ready.'
-                  : 'Fulfillment is in progress. Deliverables will be presented here upon QA completion.'}
+                No deliverable files have been released yet. Files appear here only after they pass QA review.
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
@@ -727,7 +731,15 @@ export default function OrderWorkspacePage() {
                   <div key={d.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="space-y-1">
                       <div className="font-bold text-slate-900">{d.title}</div>
-                      <div className="text-[11px] text-slate-500 font-mono">{d.storageBucketPath}</div>
+                      {d.downloadUrl && (
+                        <a
+                          href={d.downloadUrl}
+                          data-testid={`download-deliverable-${d.fileId}`}
+                          className="text-[11px] font-semibold text-slate-700 underline"
+                        >
+                          Download file
+                        </a>
+                      )}
                       {d.verificationNotes && (
                         <p className="text-[11px] text-slate-600 italic">“{d.verificationNotes}”</p>
                       )}
@@ -749,7 +761,7 @@ export default function OrderWorkspacePage() {
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs text-slate-700">
             <div className="font-bold text-slate-900 flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Verified Scope Inclusions for Your Purchased Services</span>
+              <span>Scope Included in Your Purchase (from your order)</span>
             </div>
             <div className="space-y-3">
               {order?.items.map((item) => (
