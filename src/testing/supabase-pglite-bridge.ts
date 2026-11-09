@@ -49,6 +49,73 @@ function digestTestPassword(pw: string): string {
   return crypto.createHash('sha256').update(pw).digest('hex');
 }
 
+/** Creates the Supabase-managed auth/storage stubs, API roles and default privileges on a fresh PGlite. */
+export async function bootstrapSupabasePlatform(pg: PGlite): Promise<void> {
+    // 1. Bootstrap Supabase-managed `auth` and `storage` schemas in disposable PG16 before running migration
+    await pg.exec(`
+      CREATE SCHEMA IF NOT EXISTS auth;
+      CREATE TABLE IF NOT EXISTS auth.users (
+        id UUID PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+      );
+      CREATE OR REPLACE FUNCTION auth.uid()
+      RETURNS UUID AS $$
+        SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
+      $$ LANGUAGE sql STABLE;
+
+      CREATE OR REPLACE FUNCTION auth.role()
+      RETURNS TEXT AS $$
+        SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon')::TEXT;
+      $$ LANGUAGE sql STABLE;
+
+      CREATE SCHEMA IF NOT EXISTS storage;
+      CREATE TABLE IF NOT EXISTS storage.buckets (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        public BOOLEAN NOT NULL DEFAULT false,
+        file_size_limit BIGINT,
+        allowed_mime_types TEXT[]
+      );
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+          CREATE ROLE anon NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+          CREATE ROLE authenticated NOLOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+          CREATE ROLE service_role NOLOGIN BYPASSRLS;
+        END IF;
+      END $$;
+    `);
+
+    // 2. Emulate Supabase's platform baseline (default privileges for API roles), THEN run the
+    //    exact production migrations in order. Hardening must therefore work against the same
+    //    over-broad defaults a real Supabase project starts with.
+    await pg.exec(`
+      GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+      GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA auth TO anon, authenticated, service_role;
+      GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+    `);
+}
+
+/** Applies supabase/migrations in filename order; `filter` selects a subset (e.g. to test upgrades). */
+export async function applyMigrations(pg: PGlite, filter: (file: string) => boolean = () => true): Promise<string[]> {
+  const migrationDir = path.resolve(process.cwd(), 'supabase/migrations');
+  const files = fs.readdirSync(migrationDir).filter((f) => f.endsWith('.sql')).sort().filter(filter);
+  for (const file of files) {
+    await pg.exec(fs.readFileSync(path.join(migrationDir, file), 'utf-8'));
+  }
+  return files;
+}
+
 export async function getInitializedTestPostgres(): Promise<PGlite> {
   if (process.env.SUPABASE_TEST_BRIDGE !== 'true') {
     throw new Error('Test PostgreSQL bridge cannot be invoked outside SUPABASE_TEST_BRIDGE=true.');
@@ -58,68 +125,8 @@ export async function getInitializedTestPostgres(): Promise<PGlite> {
     globalState.pgPromise = (async () => {
       const pg = new PGlite();
 
-      // 1. Bootstrap Supabase-managed `auth` and `storage` schemas in disposable PG16 before running migration
-      await pg.exec(`
-        CREATE SCHEMA IF NOT EXISTS auth;
-        CREATE TABLE IF NOT EXISTS auth.users (
-          id UUID PRIMARY KEY,
-          email TEXT UNIQUE NOT NULL,
-          raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
-        );
-        CREATE OR REPLACE FUNCTION auth.uid()
-        RETURNS UUID AS $$
-          SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::UUID;
-        $$ LANGUAGE sql STABLE;
-
-        CREATE OR REPLACE FUNCTION auth.role()
-        RETURNS TEXT AS $$
-          SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon')::TEXT;
-        $$ LANGUAGE sql STABLE;
-
-        CREATE SCHEMA IF NOT EXISTS storage;
-        CREATE TABLE IF NOT EXISTS storage.buckets (
-          id TEXT PRIMARY KEY,
-          name TEXT UNIQUE NOT NULL,
-          public BOOLEAN NOT NULL DEFAULT false,
-          file_size_limit BIGINT,
-          allowed_mime_types TEXT[]
-        );
-
-        DO $$
-        BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-            CREATE ROLE anon NOLOGIN;
-          END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-            CREATE ROLE authenticated NOLOGIN;
-          END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-            CREATE ROLE service_role NOLOGIN BYPASSRLS;
-          END IF;
-        END $$;
-      `);
-
-      // 2. Emulate Supabase's platform baseline (default privileges for API roles), THEN run the
-      //    exact production migrations in order. Hardening must therefore work against the same
-      //    over-broad defaults a real Supabase project starts with.
-      await pg.exec(`
-        GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
-        GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA auth TO anon, authenticated, service_role;
-        GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO anon, authenticated, service_role;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
-      `);
-
-      const migrationDir = path.resolve(process.cwd(), 'supabase/migrations');
-      const migrationFiles = fs
-        .readdirSync(migrationDir)
-        .filter((f) => f.endsWith('.sql'))
-        .sort();
-      for (const file of migrationFiles) {
-        await pg.exec(fs.readFileSync(path.join(migrationDir, file), 'utf-8'));
-      }
+      await bootstrapSupabasePlatform(pg);
+      await applyMigrations(pg);
 
       // Disposable test database ONLY: permit the local payment simulator (false by default in the migration).
       await pg.exec(`UPDATE public.platform_flags SET bool_value = true WHERE flag_key = 'allow_simulated_payments';`);
