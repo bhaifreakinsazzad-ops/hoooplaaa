@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { AuditService } from '@/domain/audit-service';
 import { persistentDB } from '@/domain/persistent-db';
 import { authenticateRequest, requireRole } from '@/domain/auth-guard';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
 
 /**
  * POST /api/audit
  * Submits a Pre-Sale Initial Readiness Audit request and awaits database persistence.
  */
 export async function POST(req: NextRequest) {
+  // CSRF: cookie-authenticated state change must be same-origin.
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   try {
     const body = await req.json();
     const { businessName, websiteOrPageUrl, contactEmail, contactPhone, primaryGoal } = body;

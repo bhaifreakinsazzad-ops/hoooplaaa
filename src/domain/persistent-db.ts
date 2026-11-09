@@ -27,6 +27,13 @@ import {
   UserRole,
 } from './types';
 import { OrderService } from './order-service';
+import {
+  FileCategory,
+  MAX_FILE_SIZE_BYTES,
+  buildStoragePath,
+  isFileCategory,
+  sha256Hex,
+} from './intake-and-files';
 /**
  * The PGlite test bridge (and its seeded test accounts) is loaded lazily and ONLY when
  * SUPABASE_TEST_BRIDGE=true (which resolveSupabaseConfig refuses on any Vercel/staging/production
@@ -98,6 +105,11 @@ export interface DbDeliverableRecord {
   verificationNotes: string;
   qaChecklistPassed: boolean;
   createdAt: string;
+  deliverableFileUuid?: string | null;
+  qaReviewUuid?: string | null;
+  fileSha256?: string | null;
+  fileId?: string | null;
+  qaReviewId?: string | null;
 }
 
 export interface DbRevisionRecord {
@@ -108,6 +120,115 @@ export interface DbRevisionRecord {
   isResolved: boolean;
   resolvedAt?: string;
   createdAt: string;
+}
+
+/** A stored order file row as the server sees it (internal; never sent to customers verbatim). */
+export interface StoredOrderFile extends FileAttachment {
+  fileUuid: string;
+  sha256Hash: string;
+  category: FileCategory;
+  uploadedByUserId: string;
+}
+
+export type VerifiedFileRead =
+  | { status: 'ok'; file: StoredOrderFile; bytes: Buffer }
+  | { status: 'missing_object'; file: StoredOrderFile }
+  | { status: 'oversized'; file: StoredOrderFile }
+  | { status: 'integrity_mismatch'; file: StoredOrderFile; actualSha256: string; actualSize: number };
+
+export interface DbQaReviewRecord {
+  id: string;
+  orderId: string;
+  fileId: string;
+  fileSha256: string;
+  reviewerId: string;
+  reviewerRole: 'customer' | 'finance' | 'engineer' | 'admin';
+  decision: 'approved' | 'rejected';
+  checklist: Record<string, boolean>;
+  notes: string;
+  createdAt: string;
+}
+
+/** Thrown when a write is based on a stale order version (HTTP 409). */
+export class OrderConcurrencyError extends Error {
+  readonly code = 'ORDER_VERSION_CONFLICT';
+  constructor(public readonly orderId: string, detail: string) {
+    super(`Order ${orderId} was modified concurrently: ${detail}. Reload the order and retry.`);
+    this.name = 'OrderConcurrencyError';
+  }
+}
+
+/** Thrown when the database refuses an illegal transition or state regression (HTTP 422). */
+export class OrderTransitionError extends Error {
+  readonly code = 'ORDER_TRANSITION_REJECTED';
+  constructor(message: string) {
+    super(message);
+    this.name = 'OrderTransitionError';
+  }
+}
+
+/** Thrown when the database refuses a QA review (ownership, digest, reviewer or checklist) (HTTP 422). */
+export class QaReviewRejectedError extends Error {
+  readonly code = 'QA_REVIEW_REJECTED';
+  constructor(message: string) {
+    super(`QA review rejected by database: ${message}`);
+    this.name = 'QaReviewRejectedError';
+  }
+}
+
+export function mapOrderWriteError(orderId: string, error: { code?: string; message?: string }): Error {
+  const message = error?.message || 'Database error';
+  if (error?.code === '40001' || /ORDER_VERSION_CONFLICT/.test(message)) {
+    return new OrderConcurrencyError(orderId, message);
+  }
+  if (error?.code === '23514' || error?.code === '42501' || /^[A-Z_]+:/.test(message) || /^[A-Z_]{6,}$/.test(message)) {
+    return new OrderTransitionError(message);
+  }
+  return new Error(`Supabase order write failed: ${message}`);
+}
+
+/** HTTP status for an error thrown by an order write. */
+export function orderWriteErrorStatus(err: unknown): number {
+  if (err instanceof OrderConcurrencyError) return 409;
+  if (err instanceof OrderTransitionError || err instanceof QaReviewRejectedError) return 422;
+  return 400;
+}
+
+function rowToStoredFile(r: any, orderId: string): StoredOrderFile {
+  const parsed = (typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json) || {};
+  const category: FileCategory = isFileCategory(r.file_category) ? r.file_category : 'client_asset';
+  return {
+    ...(parsed as FileAttachment),
+    id: r.file_code,
+    orderId,
+    fileUuid: r.id,
+    uploadedByUserId: r.uploaded_by,
+    fileName: r.file_name,
+    fileSizeBytes: Number(r.file_size_bytes),
+    mimeType: r.mime_type,
+    storagePath: r.storage_path,
+    isPrivate: true,
+    category,
+    sha256Hash: r.sha256_hash,
+    uploadedAt: parsed.uploadedAt || r.created_at,
+    downloadUrl: `/api/orders/${orderId}/files?download=${r.file_code}`,
+  };
+}
+
+function rowToQaReview(r: any, orderId: string, fileId: string): DbQaReviewRecord {
+  const checklist = (typeof r.checklist === 'string' ? JSON.parse(r.checklist) : r.checklist) || {};
+  return {
+    id: r.review_code,
+    orderId,
+    fileId,
+    fileSha256: r.file_sha256,
+    reviewerId: r.reviewer_id,
+    reviewerRole: r.reviewer_role,
+    decision: r.decision,
+    checklist,
+    notes: r.notes || '',
+    createdAt: r.created_at,
+  };
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -513,6 +634,16 @@ class PersistentDatabaseEngine {
   // ORDERS
   // ============================================================================
 
+  /**
+   * Database-authoritative, concurrency-safe order persistence.
+   *
+   * - A NEW order is inserted (a duplicate insert race surfaces as OrderConcurrencyError, never an overwrite).
+   * - An EXISTING order is only updated with compare-and-swap on `row_version`: the caller must hold the
+   *   version it read (getOrder() attaches `rowVersion`). If any other writer (including the settlement RPC)
+   *   changed the row since, zero rows match and OrderConcurrencyError is thrown instead of overwriting.
+   * - public.guard_order_transition() additionally rejects illegal transitions and any regression of
+   *   payment / intake / SLA / delivery / acceptance state, whatever the application sends.
+   */
   public async saveOrder(order: Order, organizationId?: string): Promise<Order> {
     const supabase = this.getSupabaseAdminClient();
 
@@ -534,8 +665,6 @@ class PersistentDatabaseEngine {
         ? organizationId
         : customerProfile.organizationId;
 
-    await this.saveQuote(order.quoteSnapshot, customerProfile.id, resolvedOrgId);
-
     const orderUuid = toDeterministicUuid(`order:${order.id}`);
     const quoteUuid = toDeterministicUuid(`quote:${order.quoteId}`);
 
@@ -545,41 +674,84 @@ class PersistentDatabaseEngine {
       if (eng) validEngineerUuid = eng.id;
     }
 
+    const { rowVersion: expectedVersion, ...orderWithoutVersion } = order;
     const enrichedOrder = {
-      ...order,
+      ...orderWithoutVersion,
       customerUserId: customerProfile.id,
       organizationId: resolvedOrgId,
     };
 
-    const { error } = await supabase.from('orders').upsert(
-      {
-        id: orderUuid,
-        order_code: order.id,
-        order_number: order.orderNumber,
-        organization_id: resolvedOrgId,
-        customer_id: customerProfile.id,
-        quote_id: quoteUuid,
-        assigned_engineer_id: validEngineerUuid,
-        assigned_specialist_name: order.assignedSpecialistName || null,
-        order_status: order.status,
-        financial_status: order.financialStatus,
-        intake_status: order.intakeStatus,
-        total_minor: order.totalMinor,
-        currency: order.currency,
-        quote_snapshot: order.quoteSnapshot,
-        sla_started_at: order.slaStartedAt || null,
-        sla_deadline_at: order.deliveryTargetDate || null,
-        delivered_at: order.deliveredAt || null,
-        accepted_at: order.acceptedAt || null,
-        payload_json: enrichedOrder,
-        created_at: order.createdAt,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'order_code' }
-    );
+    const columns = {
+      organization_id: resolvedOrgId,
+      customer_id: customerProfile.id,
+      assigned_engineer_id: validEngineerUuid,
+      assigned_specialist_name: order.assignedSpecialistName || null,
+      order_status: order.status,
+      financial_status: order.financialStatus,
+      intake_status: order.intakeStatus,
+      sla_started_at: order.slaStartedAt || null,
+      sla_deadline_at: order.deliveryTargetDate || null,
+      delivered_at: order.deliveredAt || null,
+      accepted_at: order.acceptedAt || null,
+      payload_json: enrichedOrder,
+      updated_at: new Date().toISOString(),
+    };
 
-    if (error) {
-      throw new Error(`Supabase saveOrder failed: ${error.message}`);
+    const { data: existingRows, error: lookupError } = await supabase
+      .from('orders')
+      .select('row_version')
+      .eq('order_code', order.id);
+    if (lookupError) {
+      throw new Error(`Supabase saveOrder lookup failed: ${lookupError.message}`);
+    }
+
+    let newVersion: number;
+    if (!existingRows || existingRows.length === 0) {
+      await this.saveQuote(order.quoteSnapshot, customerProfile.id, resolvedOrgId);
+      const { data: inserted, error } = await supabase
+        .from('orders')
+        .insert({
+          id: orderUuid,
+          order_code: order.id,
+          order_number: order.orderNumber,
+          quote_id: quoteUuid,
+          total_minor: order.totalMinor,
+          currency: order.currency,
+          quote_snapshot: order.quoteSnapshot,
+          created_at: order.createdAt,
+          ...columns,
+        })
+        .select('row_version');
+      if (error) {
+        if (error.code === '23505') {
+          throw new OrderConcurrencyError(order.id, 'order was created concurrently by another request');
+        }
+        throw mapOrderWriteError(order.id, error);
+      }
+      newVersion = Number(inserted?.[0]?.row_version ?? 0);
+    } else {
+      if (typeof expectedVersion !== 'number' || !Number.isFinite(expectedVersion)) {
+        throw new OrderConcurrencyError(
+          order.id,
+          'an existing order can only be updated from a version read from the database (rowVersion missing)'
+        );
+      }
+      const { data: updated, error } = await supabase
+        .from('orders')
+        .update(columns)
+        .eq('order_code', order.id)
+        .eq('row_version', expectedVersion)
+        .select('row_version');
+      if (error) {
+        throw mapOrderWriteError(order.id, error);
+      }
+      if (!updated || updated.length === 0) {
+        throw new OrderConcurrencyError(
+          order.id,
+          `stale write rejected (expected version ${expectedVersion}, found ${existingRows[0]?.row_version})`
+        );
+      }
+      newVersion = Number(updated[0].row_version);
     }
 
     await this.recordAuditLog({
@@ -588,10 +760,38 @@ class PersistentDatabaseEngine {
       action: 'ORDER_UPSERT',
       entityType: 'order',
       entityId: order.id,
-      metadata: { status: order.status, financialStatus: order.financialStatus },
+      metadata: { status: order.status, financialStatus: order.financialStatus, rowVersion: newVersion },
     });
 
-    return enrichedOrder;
+    return { ...enrichedOrder, rowVersion: newVersion };
+  }
+
+  /**
+   * Read-modify-write with optimistic concurrency. `mutate` is re-run against freshly read state after a
+   * version conflict, so every OrderService precondition is re-validated on the latest database state.
+   * A conflict that persists after `maxAttempts` is surfaced as OrderConcurrencyError (HTTP 409).
+   */
+  public async transitionOrder(
+    orderId: string,
+    mutate: (current: Order & { organizationId?: string }) => Order | Promise<Order>,
+    maxAttempts = 3
+  ): Promise<Order> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const current = await this.getOrder(orderId);
+      if (!current) throw new Error(`Order ${orderId} not found.`);
+      const next = await mutate(current);
+      try {
+        return await this.saveOrder({ ...next, rowVersion: current.rowVersion }, current.organizationId);
+      } catch (err) {
+        if (err instanceof OrderConcurrencyError) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new OrderConcurrencyError(orderId, 'retry budget exhausted');
   }
 
   public async getOrder(
@@ -602,7 +802,7 @@ class PersistentDatabaseEngine {
 
     const { data, error } = await supabase
       .from('orders')
-      .select('payload_json, organization_id, customer_id')
+      .select('payload_json, organization_id, customer_id, row_version')
       .or(`order_code.eq.${orderId},id.eq.${orderUuid},order_number.eq.${orderId}`);
 
     if (error) {
@@ -619,6 +819,7 @@ class PersistentDatabaseEngine {
       ...parsed,
       customerUserId: row.customer_id,
       organizationId: row.organization_id,
+      rowVersion: Number(row.row_version ?? 0),
     };
   }
 
@@ -626,7 +827,7 @@ class PersistentDatabaseEngine {
     const supabase = this.getSupabaseAdminClient();
     const { data, error } = await supabase
       .from('orders')
-      .select('payload_json, customer_id, organization_id')
+      .select('payload_json, customer_id, organization_id, row_version')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -637,7 +838,7 @@ class PersistentDatabaseEngine {
       const parsed = (
         typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json
       ) as Order;
-      return { ...parsed, customerUserId: r.customer_id };
+      return { ...parsed, customerUserId: r.customer_id, rowVersion: Number(r.row_version ?? 0) };
     });
   }
 
@@ -1109,64 +1310,70 @@ class PersistentDatabaseEngine {
     if (!order) {
       throw new Error(`Order ${fileRecord.orderId} not found for file upload.`);
     }
+    const category: FileCategory = isFileCategory(fileRecord.category) ? fileRecord.category : 'client_asset';
+    const sha256Hash = sha256Hex(fileBytes);
+    if (fileRecord.sha256Hash && fileRecord.sha256Hash !== sha256Hash) {
+      throw new Error('File digest does not match the uploaded bytes.');
+    }
 
-    // 1. Upload actual binary bytes to private Supabase Storage bucket ('order-assets')
+    // 1. Upload the original bytes to the private bucket. Never overwrite an existing object.
     const { error: uploadError } = await supabase.storage
       .from('order-assets')
       .upload(fileRecord.storagePath, fileBytes, {
         contentType: fileRecord.mimeType,
-        upsert: true,
+        upsert: false,
       });
 
     if (uploadError) {
       throw new Error(`Supabase Storage upload failed: ${uploadError.message}`);
     }
 
-    // 2. Persist relational metadata record with SHA-256 digest in PostgreSQL `order_files`
+    // 2. Persist relational metadata bound to the order, with category and SHA-256 digest of the bytes.
     const fileUuid = toDeterministicUuid(`file:${fileRecord.id}`);
     const orderUuid = toDeterministicUuid(`order:${order.id}`);
     const uploadedByUuid = isValidUuid(fileRecord.uploadedByUserId)
       ? fileRecord.uploadedByUserId
       : order.customerUserId;
+    const saved = { ...fileRecord, category, sha256Hash, fileSizeBytes: fileBytes.byteLength };
 
-    const { error: dbError } = await supabase.from('order_files').upsert(
-      {
-        id: fileUuid,
-        file_code: fileRecord.id,
-        order_id: orderUuid,
-        uploaded_by: uploadedByUuid,
-        file_name: fileRecord.fileName,
-        file_size_bytes: fileBytes.byteLength,
-        mime_type: fileRecord.mimeType,
-        sha256_hash: fileRecord.sha256Hash || crypto.createHash('sha256').update(fileBytes).digest('hex'),
-        storage_bucket: 'order-assets',
-        storage_path: fileRecord.storagePath,
-        is_private: true,
-        payload_json: fileRecord,
-        created_at: fileRecord.uploadedAt,
-      },
-      { onConflict: 'file_code' }
-    );
+    const { error: dbError } = await supabase.from('order_files').insert({
+      id: fileUuid,
+      file_code: fileRecord.id,
+      order_id: orderUuid,
+      uploaded_by: uploadedByUuid,
+      file_name: fileRecord.fileName,
+      file_size_bytes: fileBytes.byteLength,
+      mime_type: fileRecord.mimeType,
+      sha256_hash: sha256Hash,
+      storage_bucket: 'order-assets',
+      storage_path: fileRecord.storagePath,
+      is_private: true,
+      file_category: category,
+      payload_json: saved,
+      created_at: fileRecord.uploadedAt,
+    });
 
     if (dbError) {
+      // Do not leave orphaned bytes behind when the metadata row is refused (e.g. by guard_order_file()).
+      await supabase.storage.from('order-assets').remove([fileRecord.storagePath]).catch(() => undefined);
       throw new Error(`Supabase order_files insert failed: ${dbError.message}`);
     }
 
-    return fileRecord;
+    return saved;
   }
 
+  /** Test/fixture helper: stores a small real object through the same validated path as uploads. */
   public async saveFile(orderId: string, file: Record<string, any>): Promise<void> {
     const bytes = Buffer.from(JSON.stringify(file), 'utf8');
-    const sha256Hash = crypto.createHash('sha256').update(bytes).digest('hex');
     const order = await this.getOrder(orderId);
     if (!order) throw new Error(`Order ${orderId} not found.`);
     const uploadedBy =
       file.uploadedByUserId && isValidUuid(file.uploadedByUserId)
         ? file.uploadedByUserId
         : order.customerUserId;
-    const fileId = file.id || `file_${Date.now()}`;
+    const fileId = file.id || `file_${crypto.randomBytes(8).toString('hex')}`;
     const fileName = file.fileName || file.name || 'deliverable.pdf';
-    const storagePath = file.storagePath || `orders/${orderId}/${fileId}_${fileName}`;
+    const category: FileCategory = isFileCategory(file.category) ? file.category : 'client_asset';
 
     await this.savePrivateFileWithBytes(
       {
@@ -1175,26 +1382,24 @@ class PersistentDatabaseEngine {
         orderId: order.id,
         uploadedByUserId: uploadedBy,
         fileName,
-        fileSizeBytes: file.fileSizeBytes || file.sizeBytes || bytes.byteLength,
+        fileSizeBytes: bytes.byteLength,
         mimeType: file.mimeType || 'application/pdf',
-        storagePath,
+        storagePath: buildStoragePath(order.id, category, fileId, fileName),
         isPrivate: true,
+        category,
         uploadedAt: file.uploadedAt || new Date().toISOString(),
-        sha256Hash,
       },
       bytes
     );
   }
 
-  public async getFiles(
-    orderId: string
-  ): Promise<(FileAttachment & { sha256Hash?: string })[]> {
+  public async getFiles(orderId: string): Promise<StoredOrderFile[]> {
     const supabase = this.getSupabaseAdminClient();
     const orderUuid = toDeterministicUuid(`order:${orderId}`);
 
     const { data, error } = await supabase
       .from('order_files')
-      .select('payload_json, sha256_hash')
+      .select('*')
       .eq('order_id', orderUuid)
       .order('created_at', { ascending: true });
 
@@ -1202,17 +1407,59 @@ class PersistentDatabaseEngine {
       throw new Error(`Supabase getFiles failed: ${error.message}`);
     }
 
-    return (data || []).map((r) => {
-      const parsed = (
-        typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json
-      ) as FileAttachment;
-      return {
-        ...parsed,
-        sha256Hash: r.sha256_hash,
-      };
-    });
+    return (data || []).map((r) => rowToStoredFile(r, orderId));
   }
 
+  /** Looks up one file strictly within the given order (a file id from another order never matches). */
+  public async getOrderFile(orderId: string, fileId: string): Promise<StoredOrderFile | null> {
+    if (typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(fileId)) return null;
+    const supabase = this.getSupabaseAdminClient();
+    const orderUuid = toDeterministicUuid(`order:${orderId}`);
+    const { data, error } = await supabase
+      .from('order_files')
+      .select('*')
+      .eq('order_id', orderUuid)
+      .eq('file_code', fileId);
+    if (error) {
+      throw new Error(`Supabase getOrderFile failed: ${error.message}`);
+    }
+    const row = data?.[0];
+    return row ? rowToStoredFile(row, orderId) : null;
+  }
+
+  /**
+   * Reads the original bytes of a stored file and re-verifies them: the SHA-256 is recomputed from the
+   * downloaded bytes and compared (constant-time) with the digest recorded at upload, together with size.
+   * Missing objects, corrupted/mismatched content and oversized objects are reported, never served.
+   */
+  public async readVerifiedFile(file: StoredOrderFile): Promise<VerifiedFileRead> {
+    const supabase = this.getSupabaseAdminClient();
+    let bytes: Buffer;
+    try {
+      const { data: blobData, error: downloadError } = await supabase.storage
+        .from('order-assets')
+        .download(file.storagePath);
+      if (downloadError || !blobData) return { status: 'missing_object', file };
+      if (typeof blobData.size === 'number' && blobData.size > MAX_FILE_SIZE_BYTES) {
+        return { status: 'oversized', file };
+      }
+      bytes = Buffer.from(await blobData.arrayBuffer());
+    } catch {
+      return { status: 'missing_object', file };
+    }
+    if (bytes.byteLength === 0) return { status: 'missing_object', file };
+    if (bytes.byteLength > MAX_FILE_SIZE_BYTES) return { status: 'oversized', file };
+
+    const actual = sha256Hex(bytes);
+    const expected = String(file.sha256Hash || '');
+    const digestMatches = expected.length === 64 && constantTimeEqualHex(actual, expected);
+    if (!digestMatches || bytes.byteLength !== file.fileSizeBytes) {
+      return { status: 'integrity_mismatch', file, actualSha256: actual, actualSize: bytes.byteLength };
+    }
+    return { status: 'ok', file, bytes };
+  }
+
+  /** Back-compat wrapper: returns bytes only when the integrity check passes. */
   public async getPrivateFileBytes(
     orderId: string,
     fileId: string
@@ -1220,41 +1467,10 @@ class PersistentDatabaseEngine {
     file: FileAttachment & { sha256Hash: string };
     bytes: Buffer;
   } | null> {
-    const supabase = this.getSupabaseAdminClient();
-    const orderUuid = toDeterministicUuid(`order:${orderId}`);
-    const fileUuid = toDeterministicUuid(`file:${fileId}`);
-
-    const { data, error } = await supabase
-      .from('order_files')
-      .select('payload_json, sha256_hash, storage_path')
-      .eq('order_id', orderUuid)
-      .or(`file_code.eq.${fileId},id.eq.${fileUuid}`);
-
-    if (error) {
-      throw new Error(`Supabase getPrivateFileBytes metadata lookup failed: ${error.message}`);
-    }
-
-    const row = data?.[0];
-    if (!row) return null;
-
-    const { data: blobData, error: downloadError } = await supabase.storage
-      .from('order-assets')
-      .download(row.storage_path);
-
-    if (downloadError || !blobData) {
-      return null;
-    }
-
-    const arrayBuffer = await blobData.arrayBuffer();
-    const bytes = Buffer.from(arrayBuffer);
-    const parsed = (
-      typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json
-    ) as FileAttachment;
-
-    return {
-      file: { ...parsed, sha256Hash: row.sha256_hash },
-      bytes,
-    };
+    const file = await this.getOrderFile(orderId, fileId);
+    if (!file) return null;
+    const read = await this.readVerifiedFile(file);
+    return read.status === 'ok' ? { file: read.file, bytes: read.bytes } : null;
   }
 
   public async verifyStorageObjectExists(
@@ -1273,62 +1489,91 @@ class PersistentDatabaseEngine {
   }
 
   // ============================================================================
-  // DELIVERABLES & REVISIONS (POSTGRESQL)
+  // QA REVIEWS, DELIVERABLES & REVISIONS (POSTGRESQL)
   // ============================================================================
 
-  public async saveDeliverable(params: {
-    id?: string;
+  /**
+   * Persists an immutable QA review of one deliverable file. The database trigger re-verifies that the file
+   * belongs to the order, is a staff deliverable, matches the recorded digest, that the reviewer is staff and
+   * that every checklist item is confirmed for an approval.
+   */
+  public async recordQaReview(params: {
     orderId: string;
-    uploadedBy: string;
-    title: string;
-    storageBucketPath: string;
-    verificationNotes: string;
-    qaChecklistPassed: boolean;
-  }): Promise<DbDeliverableRecord> {
-    if (params.qaChecklistPassed !== true) {
-      throw new Error('Cannot save deliverable: QA checklist must be passed.');
-    }
-    const exists = await this.verifyStorageObjectExists('order-assets', params.storageBucketPath);
-    if (!exists) {
-      throw new Error(`Cannot save deliverable: Storage object does not exist at '${params.storageBucketPath}'.`);
-    }
-
+    file: StoredOrderFile;
+    reviewerId: string;
+    reviewerRole: 'customer' | 'finance' | 'engineer' | 'admin';
+    decision: 'approved' | 'rejected';
+    checklist: Record<string, boolean>;
+    notes: string;
+  }): Promise<DbQaReviewRecord> {
     const supabase = this.getSupabaseAdminClient();
-    const delivCode = params.id || `deliv_${crypto.randomBytes(6).toString('hex')}`;
-    const delivUuid = toDeterministicUuid(`deliv:${delivCode}`);
-    const orderUuid = toDeterministicUuid(`order:${params.orderId}`);
-    const now = new Date().toISOString();
-
-    const { error } = await supabase.from('order_deliverables').upsert(
-      {
-        id: delivUuid,
-        deliverable_code: delivCode,
-        order_id: orderUuid,
-        uploaded_by: params.uploadedBy,
-        title: params.title,
-        storage_bucket_path: params.storageBucketPath,
-        verification_notes: params.verificationNotes,
-        qa_checklist_passed: params.qaChecklistPassed,
-        payload_json: params,
-        created_at: now,
-      },
-      { onConflict: 'deliverable_code' }
-    );
-
+    const reviewCode = `qa_${crypto.randomBytes(8).toString('hex')}`;
+    const { data, error } = await supabase
+      .from('order_qa_reviews')
+      .insert({
+        review_code: reviewCode,
+        order_id: toDeterministicUuid(`order:${params.orderId}`),
+        deliverable_file_id: params.file.fileUuid,
+        file_sha256: params.file.sha256Hash,
+        reviewer_id: params.reviewerId,
+        reviewer_role: params.reviewerRole,
+        decision: params.decision,
+        checklist: params.checklist,
+        notes: params.notes,
+      })
+      .select('*');
     if (error) {
-      throw new Error(`Supabase saveDeliverable failed: ${error.message}`);
+      throw new QaReviewRejectedError(error.message);
     }
+    return rowToQaReview(data?.[0] ?? {}, params.orderId, params.file.id);
+  }
 
-    return {
-      id: delivCode,
-      orderId: params.orderId,
-      uploadedBy: params.uploadedBy,
-      title: params.title,
-      storageBucketPath: params.storageBucketPath,
-      verificationNotes: params.verificationNotes,
-      qaChecklistPassed: params.qaChecklistPassed,
-      createdAt: now,
-    };
+  public async getQaReviews(orderId: string): Promise<DbQaReviewRecord[]> {
+    const supabase = this.getSupabaseAdminClient();
+    const orderUuid = toDeterministicUuid(`order:${orderId}`);
+    const [{ data, error }, files] = await Promise.all([
+      supabase.from('order_qa_reviews').select('*').eq('order_id', orderUuid).order('created_at', { ascending: false }),
+      this.getFiles(orderId),
+    ]);
+    if (error) {
+      throw new Error(`Supabase getQaReviews failed: ${error.message}`);
+    }
+    const codeByUuid = new Map(files.map((f) => [f.fileUuid, f.id]));
+    return (data || []).map((r) => rowToQaReview(r, orderId, codeByUuid.get(r.deliverable_file_id) || ''));
+  }
+
+  /**
+   * One atomic, version-checked database transaction: deliverable row (bound to file + approved review),
+   * order -> delivered, audit log. See public.deliver_order_with_qa_approval().
+   */
+  public async deliverOrderWithQaApproval(params: {
+    order: Order;
+    fileId: string;
+    qaReviewId: string;
+    actorId: string;
+    title: string;
+    verificationNotes: string;
+  }): Promise<Order> {
+    if (typeof params.order.rowVersion !== 'number') {
+      throw new OrderConcurrencyError(params.order.id, 'delivery requires the order version that was read');
+    }
+    const { rowVersion: _ignored, ...payload } = params.order;
+    const supabase = this.getSupabaseAdminClient();
+    const { data, error } = await supabase.rpc('deliver_order_with_qa_approval', {
+      p_order_code: params.order.id,
+      p_expected_version: params.order.rowVersion,
+      p_file_code: params.fileId,
+      p_qa_review_code: params.qaReviewId,
+      p_actor_id: params.actorId,
+      p_title: params.title,
+      p_verification_notes: params.verificationNotes,
+      p_order_payload: payload,
+    });
+    if (error) {
+      throw mapOrderWriteError(params.order.id, error);
+    }
+    const order = (typeof data.order === 'string' ? JSON.parse(data.order) : data.order) as Order;
+    return { ...order, rowVersion: Number(data.rowVersion) };
   }
 
   public async getDeliverables(orderId: string): Promise<DbDeliverableRecord[]> {
@@ -1344,16 +1589,24 @@ class PersistentDatabaseEngine {
       throw new Error(`Supabase getDeliverables failed: ${error.message}`);
     }
 
-    return (data || []).map((r) => ({
-      id: r.deliverable_code || r.id,
-      orderId,
-      uploadedBy: r.uploaded_by,
-      title: r.title,
-      storageBucketPath: r.storage_bucket_path,
-      verificationNotes: r.verification_notes,
-      qaChecklistPassed: Boolean(r.qa_checklist_passed),
-      createdAt: r.created_at,
-    }));
+    return (data || []).map((r) => {
+      const payload = (typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json) || {};
+      return {
+        id: r.deliverable_code || r.id,
+        orderId,
+        uploadedBy: r.uploaded_by,
+        title: r.title,
+        storageBucketPath: r.storage_bucket_path,
+        verificationNotes: r.verification_notes,
+        qaChecklistPassed: Boolean(r.qa_checklist_passed),
+        createdAt: r.created_at,
+        deliverableFileUuid: r.deliverable_file_id || null,
+        qaReviewUuid: r.qa_review_id || null,
+        fileSha256: r.file_sha256 || null,
+        fileId: payload.fileCode || null,
+        qaReviewId: payload.qaReviewCode || null,
+      };
+    });
   }
 
   public async saveRevision(params: {

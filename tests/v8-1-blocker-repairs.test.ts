@@ -12,6 +12,7 @@ import { GET as deliverablesGet } from '../src/app/api/orders/[id]/deliverables/
 import { POST as filesPost, GET as filesGet } from '../src/app/api/orders/[id]/files/route';
 import { POST as sessionPost, PATCH as sessionPatch, DELETE as sessionDelete } from '../src/app/api/auth/session/route';
 import { IntakeAndFileManager } from '../src/domain/intake-and-files';
+import { FULL_QA_CHECKLIST, seedOrderInQaReview, uploadStaffDeliverable } from './helpers/delivery-fixtures';
 
 const BASE = 'http://localhost:3000';
 
@@ -207,67 +208,41 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
   });
 
   describe('Priority 1 & 5: Honest QA Approval & Delivery Verification', () => {
-    it('7. Rejects delivery without explicit QA checklist approval (missing or false qaChecklistPassed)', async () => {
-      const adminToken = await login('admin@hoooplaaa.com', 'Admin#2026!');
+    function qaOrder(businessId: string, businessName: string) {
       const quote = calculateServerQuote({
-        businessId: 'biz-v81-7',
-        businessName: 'QA Strict Ltd',
+        businessId,
+        businessName,
         businessProfile: { operatingModel: 'in_person_storefront', hasPhysicalStorefront: true },
         selectedPlatformSkus: ['HI-SET-META'],
         selectedAddonSkus: [],
       });
-      const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
-      order.financialStatus = 'paid';
-      order.intakeStatus = 'completed';
-      order.status = 'qa_review';
-      order.assignedSpecialistId = '00000000-0000-4000-a000-000000000004';
-      await persistentDB.saveOrder(order, order.organizationId);
+      return OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
+    }
 
-      // Missing qaChecklistPassed
-      const missingQARes = await adminOrdersPost(
-        req('/api/admin/orders', {
-          method: 'POST',
-          headers: { authorization: `Bearer ${adminToken}` },
-          body: {
-            orderId: order.id,
-            action: 'deliver',
-          },
-        })
-      );
-      expect(missingQARes.status).toBe(422);
-      const missingJson = await missingQARes.json();
-      expect(missingJson.error).toMatch(/Explicit QA checklist approval is required/i);
+    it('7. Rejects delivery without a persisted QA review (request flag qaChecklistPassed is never QA approval)', async () => {
+      const adminToken = await login('admin@hoooplaaa.com', 'Admin#2026!');
+      const order = qaOrder('biz-v81-7', 'QA Strict Ltd');
+      await seedOrderInQaReview(order);
+      const file = await uploadStaffDeliverable(order.id);
 
-      // qaChecklistPassed: false
-      const falseQARes = await adminOrdersPost(
-        req('/api/admin/orders', {
-          method: 'POST',
-          headers: { authorization: `Bearer ${adminToken}` },
-          body: {
-            orderId: order.id,
-            action: 'deliver',
-            qaChecklistPassed: false,
-          },
-        })
-      );
-      expect(falseQARes.status).toBe(422);
+      for (const body of [
+        { orderId: order.id, action: 'deliver' },
+        { orderId: order.id, action: 'deliver', qaChecklistPassed: false },
+        { orderId: order.id, action: 'deliver', qaChecklistPassed: true, deliverableFileId: file.id },
+      ]) {
+        const res = await adminOrdersPost(
+          req('/api/admin/orders', { method: 'POST', headers: { authorization: `Bearer ${adminToken}` }, body })
+        );
+        expect(res.status).toBe(422);
+        expect((await res.json()).error).toMatch(/persisted, approved QA review/i);
+      }
+      expect((await persistentDB.getOrder(order.id))?.status).toBe('qa_review');
     });
 
-    it('8. Rejects delivery using a fabricated storage path (storage object does not exist)', async () => {
+    it('8. Rejects delivery using a fabricated or raw storage path (only owned file ids are accepted)', async () => {
       const adminToken = await login('admin@hoooplaaa.com', 'Admin#2026!');
-      const quote = calculateServerQuote({
-        businessId: 'biz-v81-8',
-        businessName: 'Fabrication Defense Corp',
-        businessProfile: { operatingModel: 'in_person_storefront', hasPhysicalStorefront: true },
-        selectedPlatformSkus: ['HI-SET-META'],
-        selectedAddonSkus: [],
-      });
-      const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
-      order.financialStatus = 'paid';
-      order.intakeStatus = 'completed';
-      order.status = 'qa_review';
-      order.assignedSpecialistId = '00000000-0000-4000-a000-000000000004';
-      await persistentDB.saveOrder(order, order.organizationId);
+      const order = qaOrder('biz-v81-8', 'Fabrication Defense Corp');
+      await seedOrderInQaReview(order);
 
       const fabricatedRes = await adminOrdersPost(
         req('/api/admin/orders', {
@@ -276,85 +251,60 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
           body: {
             orderId: order.id,
             action: 'deliver',
-            qaChecklistPassed: true,
-            deliverablePath: `orders/${order.id}/fabricated_pack_never_uploaded.pdf`,
+            qaReviewId: 'qa_fabricated',
+            deliverablePath: `orders/${order.id}/deliverables/fabricated_pack_never_uploaded.pdf`,
           },
         })
       );
       expect(fabricatedRes.status).toBe(422);
-      const json = await fabricatedRes.json();
-      expect(json.error).toMatch(/does not exist in private storage/i);
+      expect((await fabricatedRes.json()).error).toMatch(/Raw storage paths are not accepted/i);
     });
 
-    it('9. Rejects delivery when only customer intake files exist (intake cannot count as deliverable)', async () => {
+    it('9. Rejects QA review and delivery of a customer intake file (intake cannot count as deliverable)', async () => {
       const adminToken = await login('admin@hoooplaaa.com', 'Admin#2026!');
       const aliceToken = await login('alice@dhakaheritage.bd', 'CustomerA#2026!');
-      const quote = calculateServerQuote({
-        businessId: 'biz-v81-9',
-        businessName: 'Intake Rejection Ltd',
-        businessProfile: { operatingModel: 'in_person_storefront', hasPhysicalStorefront: true },
-        selectedPlatformSkus: ['HI-SET-META'],
-        selectedAddonSkus: [],
-      });
-      const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
-      order.financialStatus = 'paid';
-      order.intakeStatus = 'completed';
-      order.status = 'qa_review';
-      order.assignedSpecialistId = '00000000-0000-4000-a000-000000000004';
-      await persistentDB.saveOrder(order, order.organizationId);
+      const order = qaOrder('biz-v81-9', 'Intake Rejection Ltd');
+      await seedOrderInQaReview(order);
 
-      // Customer uploads an intake file
       const validPngBase64 =
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
       const custFileRes = await filesPost(
         req(`/api/orders/${order.id}/files`, {
           method: 'POST',
           headers: { authorization: `Bearer ${aliceToken}` },
-          body: {
-            fileName: 'client_intake_logo.png',
-            mimeType: 'image/png',
-            fileContentBase64: validPngBase64,
-          },
+          body: { fileName: 'client_intake_logo.png', mimeType: 'image/png', fileContentBase64: validPngBase64 },
         }),
         { params: Promise.resolve({ id: order.id }) }
       );
       const { file: custFile } = await custFileRes.json();
+      expect(custFile.category).toBe('client_asset');
 
-      // Admin attempts to deliver referencing customer's intake file
+      const qaRes = await adminOrdersPost(
+        req('/api/admin/orders', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: { orderId: order.id, action: 'qa_review', decision: 'approved', checklist: FULL_QA_CHECKLIST, deliverableFileId: custFile.id },
+        })
+      );
+      expect(qaRes.status).toBe(422);
+      expect((await qaRes.json()).error).toMatch(/Customer intake uploads cannot be used as deliverables/i);
+
       const deliverWithIntake = await adminOrdersPost(
         req('/api/admin/orders', {
           method: 'POST',
           headers: { authorization: `Bearer ${adminToken}` },
-          body: {
-            orderId: order.id,
-            action: 'deliver',
-            qaChecklistPassed: true,
-            deliverableFileId: custFile.id,
-          },
+          body: { orderId: order.id, action: 'deliver', qaReviewId: 'qa_any', deliverableFileId: custFile.id },
         })
       );
       expect(deliverWithIntake.status).toBe(422);
-      const json = await deliverWithIntake.json();
-      expect(json.error).toMatch(/Customer intake uploads cannot be used as deliverables/i);
+      expect((await deliverWithIntake.json()).error).toMatch(/Customer intake uploads cannot be used as deliverables/i);
     });
 
-    it('10. Successfully delivers when real staff deliverable exists in private storage and QA is approved', async () => {
+    it('10. Delivers only after a persisted, approved QA review of a real staff deliverable', async () => {
       const adminToken = await login('admin@hoooplaaa.com', 'Admin#2026!');
-      const quote = calculateServerQuote({
-        businessId: 'biz-v81-10',
-        businessName: 'Honest Delivery Ltd',
-        businessProfile: { operatingModel: 'in_person_storefront', hasPhysicalStorefront: true },
-        selectedPlatformSkus: ['HI-SET-META'],
-        selectedAddonSkus: [],
-      });
-      const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
-      order.financialStatus = 'paid';
-      order.intakeStatus = 'completed';
-      order.status = 'qa_review';
-      order.assignedSpecialistId = '00000000-0000-4000-a000-000000000004';
-      await persistentDB.saveOrder(order, order.organizationId);
+      const order = qaOrder('biz-v81-10', 'Honest Delivery Ltd');
+      await seedOrderInQaReview(order);
 
-      // Staff uploads genuine deliverable PDF file
       const realPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
       const staffUploadRes = await filesPost(
         req(`/api/orders/${order.id}/files`, {
@@ -372,8 +322,29 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
       expect(staffUploadRes.status).toBe(200);
       const { file: deliverableFile } = await staffUploadRes.json();
       expect(deliverableFile.category).toBe('deliverable');
+      expect(deliverableFile.sha256Hash).toBe(crypto.createHash('sha256').update(realPdfBytes).digest('hex'));
 
-      // Admin delivers order with QA checklist passed
+      const qaRes = await adminOrdersPost(
+        req('/api/admin/orders', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${adminToken}` },
+          body: {
+            orderId: order.id,
+            action: 'qa_review',
+            decision: 'approved',
+            checklist: FULL_QA_CHECKLIST,
+            deliverableFileId: deliverableFile.id,
+            notes: 'All roles verified and partner admin granted.',
+          },
+        })
+      );
+      expect(qaRes.status).toBe(200);
+      const { qaReview } = await qaRes.json();
+      expect(qaReview.decision).toBe('approved');
+      expect(qaReview.reviewerId).toBe('00000000-0000-4000-a000-000000000005');
+      expect(qaReview.fileSha256).toBe(deliverableFile.sha256Hash);
+      expect(qaReview.createdAt).toBeTruthy();
+
       const deliverRes = await adminOrdersPost(
         req('/api/admin/orders', {
           method: 'POST',
@@ -381,8 +352,8 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
           body: {
             orderId: order.id,
             action: 'deliver',
-            qaChecklistPassed: true,
             deliverableFileId: deliverableFile.id,
+            qaReviewId: qaReview.id,
             deliverableTitle: 'Verified Meta Setup Handover Pack',
             verificationNotes: 'All roles verified and partner admin granted.',
           },
@@ -394,10 +365,12 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
       expect(deliverJson.order.status).toBe('delivered');
       expect(deliverJson.order.deliveredAt).toBeTruthy();
 
-      // Verified deliverable row exists
       const deliverables = await persistentDB.getDeliverables(order.id);
       expect(deliverables.length).toBe(1);
       expect(deliverables[0].qaChecklistPassed).toBe(true);
+      expect(deliverables[0].fileId).toBe(deliverableFile.id);
+      expect(deliverables[0].qaReviewId).toBe(qaReview.id);
+      expect(deliverables[0].fileSha256).toBe(deliverableFile.sha256Hash);
     });
   });
 
@@ -488,7 +461,8 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
         qa_checklist_passed: true,
         created_at: new Date().toISOString(),
       });
-      expect(insError).toBeNull();
+      // V8.2: the database refuses deliverables not bound to an owned file + approved QA review.
+      expect(insError?.message).toMatch(/DELIVERABLE_UNBOUND/);
 
       const acceptRes = await acceptPost(
         req(`/api/orders/${order.id}/accept`, {
@@ -499,7 +473,7 @@ describe('Directive V8.1 — Critical Release Blocker Repair Test Suite', () => 
       );
       expect(acceptRes.status).toBe(422);
       const json = await acceptRes.json();
-      expect(json.error).toMatch(/Deliverable records must have passed QA and confirmed storage assets/i);
+      expect(json.error).toMatch(/No verified deliverable exists/i);
     });
   });
 

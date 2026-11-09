@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
 import { SSLCommerzAdapter } from '@/domain/payment-adapter';
 
+/**
+ * CSRF NOTE: deliberately NOT same-origin restricted. SSLCOMMERZ posts here server-to-server / via the
+ * gateway origin; the request carries no trusted session and grants nothing by itself. Settlement happens only
+ * after server-side validation against the gateway (verifyCallback is read-only; settle_order_payment_paid is atomic).
+ */
 export async function POST(req: NextRequest) {
   try {
     let payload: Record<string, unknown> = {};

@@ -43,7 +43,7 @@ export function getBusinessCalendar(): BusinessCalendar {
     holidays: (process.env.BUSINESS_HOLIDAYS || '')
       .split(',')
       .map((x) => x.trim())
-      .filter((x) => /^d{4}-d{2}-d{2}$/.test(x)),
+      .filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)),
     opensMinutes: 9 * 60,
     cutoffMinutes: 17 * 60,
     policyStatus: process.env.BUSINESS_CALENDAR_APPROVED === 'true' ? 'APPROVED' : 'PROVISIONAL_UNAPPROVED',
@@ -331,6 +331,19 @@ export class OrderService {
     const updated = { ...order };
     updated.status = 'delivered';
     updated.deliveredAt = new Date().toISOString();
+    updated.updatedAt = new Date().toISOString();
+    return updated;
+  }
+
+  /**
+   * QA rejected the deliverable: the order returns to in_progress for rework (a new QA review is required).
+   */
+  public static returnFromQa(order: Order): Order {
+    if (order.status !== 'qa_review') {
+      throw new Error(`Illegal state transition: Only orders in 'qa_review' can be returned from QA (current: '${order.status}').`);
+    }
+    const updated = { ...order };
+    updated.status = 'in_progress';
     updated.updatedAt = new Date().toISOString();
     return updated;
   }
