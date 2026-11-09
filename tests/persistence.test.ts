@@ -171,6 +171,23 @@ describe('Relational Database Persistence, Restart Durability & Private File Int
     );
     await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
 
+    const realPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+    await persistentDB.savePrivateFileWithBytes(
+      {
+        id: `deliv_${Date.now()}`,
+        orderId: order.id,
+        uploadedByUserId: '00000000-0000-4000-a000-000000000004',
+        fileName: 'handover.pdf',
+        mimeType: 'application/pdf',
+        storagePath: `orders/${order.id}/handover.pdf`,
+        fileSizeBytes: realPdfBytes.length,
+        isPrivate: true,
+        category: 'deliverable',
+        uploadedAt: new Date().toISOString(),
+      },
+      realPdfBytes
+    );
+
     const deliverable = await persistentDB.saveDeliverable({
       orderId: order.id,
       uploadedBy: '00000000-0000-4000-a000-000000000004',

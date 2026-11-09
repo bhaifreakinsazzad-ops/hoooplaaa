@@ -246,11 +246,28 @@ export class OrderService {
   /**
    * Staff assignment and progress update.
    */
+  /**
+   * Staff assignment and progress update.
+   * Prerequisites:
+   * - Order must be paid (financialStatus === 'paid')
+   * - Order intake must be completed (intakeStatus === 'completed')
+   * - Order status must be ready_for_fulfillment, in_progress, or qa_review
+   */
   public static assignStaff(
     order: Order,
     specialistId: string,
     specialistName: string
   ): Order {
+    if (order.financialStatus !== 'paid') {
+      throw new Error('Illegal state transition: Cannot assign staff to an unpaid order.');
+    }
+    if (order.intakeStatus !== 'completed') {
+      throw new Error('Illegal state transition: Cannot assign staff before client intake requirements are completed.');
+    }
+    if (!['ready_for_fulfillment', 'in_progress', 'qa_review'].includes(order.status)) {
+      throw new Error(`Illegal state transition: Cannot assign staff to order in status '${order.status}'.`);
+    }
+
     const updated = { ...order };
     updated.assignedSpecialistId = specialistId;
     updated.assignedSpecialistName = specialistName;
@@ -263,8 +280,26 @@ export class OrderService {
 
   /**
    * Submit completed setup for internal QA review.
+   * Prerequisites:
+   * - Order must be paid
+   * - Order intake must be completed
+   * - Order must be in_progress
+   * - Order must have an assigned specialist
    */
   public static submitForQA(order: Order): Order {
+    if (order.financialStatus !== 'paid') {
+      throw new Error('Illegal state transition: Cannot submit for QA on an unpaid order.');
+    }
+    if (order.intakeStatus !== 'completed') {
+      throw new Error('Illegal state transition: Cannot submit for QA before client intake requirements are completed.');
+    }
+    if (order.status !== 'in_progress') {
+      throw new Error(`Illegal state transition: Order must be in 'in_progress' status to submit for QA (current: '${order.status}').`);
+    }
+    if (!order.assignedSpecialistId) {
+      throw new Error('Illegal state transition: Order must have an assigned specialist before QA submission.');
+    }
+
     const updated = { ...order };
     updated.status = 'qa_review';
     updated.updatedAt = new Date().toISOString();
@@ -273,8 +308,26 @@ export class OrderService {
 
   /**
    * QA passed, deliver to client.
+   * Prerequisites:
+   * - Order must be paid
+   * - Order intake must be completed
+   * - Order must be in qa_review
+   * - Delivery requires QA checklist passed verification
    */
-  public static deliverOrder(order: Order): Order {
+  public static deliverOrder(order: Order, params?: { qaChecklistPassed?: boolean }): Order {
+    if (order.financialStatus !== 'paid') {
+      throw new Error('Illegal state transition: Cannot deliver an unpaid order.');
+    }
+    if (order.intakeStatus !== 'completed') {
+      throw new Error('Illegal state transition: Cannot deliver before client intake is completed.');
+    }
+    if (order.status !== 'qa_review') {
+      throw new Error(`Illegal state transition: Order must be in 'qa_review' status before delivery (current: '${order.status}').`);
+    }
+    if (!params || params.qaChecklistPassed !== true) {
+      throw new Error('Illegal state transition: QA checklist must be passed before delivery.');
+    }
+
     const updated = { ...order };
     updated.status = 'delivered';
     updated.deliveredAt = new Date().toISOString();
@@ -283,9 +336,34 @@ export class OrderService {
   }
 
   /**
-   * Client accepts handover.
+   * Request revision on a delivered order.
+   * Prerequisites:
+   * - Order must be delivered
    */
-  public static acceptHandover(order: Order): Order {
+  public static requestRevision(order: Order, revisionNotes?: string): Order {
+    if (order.status !== 'delivered') {
+      throw new Error(`Illegal state transition: Revisions can only be requested on delivered orders (current: '${order.status}').`);
+    }
+    const updated = { ...order };
+    updated.status = 'in_progress';
+    updated.updatedAt = new Date().toISOString();
+    return updated;
+  }
+
+  /**
+   * Client accepts handover.
+   * Prerequisites:
+   * - Order must be paid
+   * - Order must be in delivered status
+   */
+  public static acceptHandover(order: Order, actorId?: string): Order {
+    if (order.financialStatus !== 'paid') {
+      throw new Error('Illegal state transition: Cannot accept an unpaid order.');
+    }
+    if (order.status !== 'delivered') {
+      throw new Error(`Illegal state transition: Only delivered orders can be accepted (current: '${order.status}').`);
+    }
+
     const updated = { ...order };
     updated.status = 'accepted';
     updated.acceptedAt = new Date().toISOString();

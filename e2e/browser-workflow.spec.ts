@@ -402,18 +402,55 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     });
     expect(qaRes.ok()).toBe(true);
 
+    // Staff uploads real deliverable pack into private storage
+    const realDeliverablePdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+    const staffDeliverableUpload = await request.post(`/api/orders/${orderId}/files`, {
+      headers: adminHeaders,
+      data: {
+        fileName: 'official_handover_pack.pdf',
+        mimeType: 'application/pdf',
+        fileContentBase64: realDeliverablePdf.toString('base64'),
+        category: 'deliverable',
+      },
+    });
+    expect(staffDeliverableUpload.ok()).toBe(true);
+    const { file: staffDeliverableFile } = await staffDeliverableUpload.json();
+
     const deliverRes = await request.post('/api/admin/orders', {
       headers: adminHeaders,
-      data: { orderId, action: 'deliver' },
+      data: {
+        orderId,
+        action: 'deliver',
+        qaChecklistPassed: true,
+        deliverableFileId: staffDeliverableFile.id,
+        deliverableTitle: 'Dhaka Heritage Production Handover Pack',
+        verificationNotes: 'All Meta Partner and Google Business roles confirmed.',
+      },
     });
     expect(deliverRes.ok()).toBe(true);
     const deliverData = await deliverRes.json();
     expect(deliverData.order.status).toBe('delivered');
 
-    // View Order Workspace in Browser and capture screenshot
+    // Customer A logs back in to inspect delivered order, test UI file upload, and accept handover
+    await page.context().clearCookies();
+    await page.goto('/login');
+    await page.fill('#login-email', 'alice@dhakaheritage.bd');
+    await page.fill('#login-password', 'CustomerA#2026!');
+    await page.click('[data-testid="login-submit-btn"]');
+    await page.waitForURL((url) => url.pathname === '/dashboard');
+
+    // View Order Workspace in Browser
     await page.goto(`/dashboard/orders/${orderId}`);
     await expect(page.locator('body')).toContainText('Dhaka Heritage Roasters Ltd.');
     await expect(page.locator('body')).toContainText(/delivered/i);
+
+    // Switch to Deliverables tab and accept handover
+    await page.click('button:has-text("Deliverables")');
+    const acceptBtn = page.locator('[data-testid="accept-handover-btn"]');
+    await expect(acceptBtn).toBeVisible();
+    await acceptBtn.click();
+    await expect(page.locator('body')).toContainText(/Handover Officially Accepted|Handover Accepted/i);
+
     await page.screenshot({
       path: path.join(screenshotDir, '07-client-order-workspace.png'),
       fullPage: false,

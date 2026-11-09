@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   authenticateCredentials,
   authenticateRequest,
+  extractBearerOrCookieToken,
   registerCustomerWithSupabaseAuth,
   SESSION_COOKIE_NAME,
   LEGACY_SESSION_COOKIE_NAME,
@@ -96,7 +97,6 @@ export async function POST(req: NextRequest) {
 
         const response = NextResponse.json({
           success: true,
-          token,
           user: {
             id: created.id,
             organizationId: created.organizationId,
@@ -143,7 +143,6 @@ export async function POST(req: NextRequest) {
     const { user, token } = authResult;
     const response = NextResponse.json({
       success: true,
-      token,
       user: {
         id: user.id,
         organizationId: user.organizationId,
@@ -193,6 +192,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   const auth = await authenticateRequest(req);
   if (!auth.authenticated) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
@@ -225,15 +227,83 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-export async function DELETE() {
-  try {
-    const supabaseAuth = persistentDB.getSupabaseAuthClient();
-    await supabaseAuth.auth.signOut();
-  } catch {
-    // Ignore sign-out errors when clearing cookies
+export async function DELETE(req: NextRequest) {
+  // 1. CSRF / origin check: this endpoint operates on cookie credentials
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
+  // 2. Identify the active authenticated session before revocation
+  const auth = await authenticateRequest(req);
+  const token = extractBearerOrCookieToken(req);
+
+  if (auth.authenticated) {
+    try {
+      await persistentDB.recordAuditLog({
+        actorId: auth.user.id,
+        actorRole: auth.user.role,
+        action: 'AUTH_LOGOUT_SUCCESS',
+        entityType: 'user',
+        entityId: auth.user.id,
+        metadata: { email: auth.user.email },
+      });
+    } catch {
+      // Audit log errors must never block session termination
+    }
   }
-  const response = NextResponse.json({ success: true, message: 'Signed out.' });
-  response.cookies.delete(SESSION_COOKIE_NAME);
-  response.cookies.delete(LEGACY_SESSION_COOKIE_NAME);
+
+  // 3. Server-side session revocation: revoke via Supabase Admin API
+  let serverRevoked = false;
+  if (token) {
+    try {
+      const admin = persistentDB.getSupabaseAdminClient();
+      const { error: adminSignOutError } = await admin.auth.admin.signOut(token, 'global');
+      if (adminSignOutError) {
+        console.warn('[auth/logout] admin.signOut error:', adminSignOutError);
+      } else {
+        serverRevoked = true;
+      }
+    } catch (adminErr) {
+      console.warn('[auth/logout] admin.signOut warning:', adminErr);
+    }
+
+    try {
+      const supabaseAuth = persistentDB.getSupabaseAuthClient();
+      await supabaseAuth.auth.signOut();
+    } catch {
+      // Best effort client sign-out
+    }
+  }
+
+  // 4. Securely clear both session cookies with explicit path, maxAge: 0, and security flags
+  const isSecureEnv =
+    process.env.NODE_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'preview';
+
+  const response = NextResponse.json(
+    {
+      success: true,
+      serverRevoked,
+      message: serverRevoked ? 'Signed out and session revoked successfully.' : 'Signed out (cookies cleared).',
+    },
+    { headers: { 'Cache-Control': 'no-store, private' } }
+  );
+
+  response.cookies.set(SESSION_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: isSecureEnv,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  });
+
+  response.cookies.set(LEGACY_SESSION_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: isSecureEnv,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  });
+
   return response;
 }

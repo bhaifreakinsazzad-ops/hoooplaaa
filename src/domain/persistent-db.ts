@@ -1101,7 +1101,7 @@ class PersistentDatabaseEngine {
   // ============================================================================
 
   public async savePrivateFileWithBytes(
-    fileRecord: FileAttachment & { sha256Hash: string },
+    fileRecord: any,
     fileBytes: Buffer
   ): Promise<FileAttachment & { sha256Hash: string }> {
     const supabase = this.getSupabaseAdminClient();
@@ -1138,7 +1138,7 @@ class PersistentDatabaseEngine {
         file_name: fileRecord.fileName,
         file_size_bytes: fileBytes.byteLength,
         mime_type: fileRecord.mimeType,
-        sha256_hash: fileRecord.sha256Hash,
+        sha256_hash: fileRecord.sha256Hash || crypto.createHash('sha256').update(fileBytes).digest('hex'),
         storage_bucket: 'order-assets',
         storage_path: fileRecord.storagePath,
         is_private: true,
@@ -1257,6 +1257,21 @@ class PersistentDatabaseEngine {
     };
   }
 
+  public async verifyStorageObjectExists(
+    bucket: string,
+    storagePath: string
+  ): Promise<boolean> {
+    const supabase = this.getSupabaseAdminClient();
+    try {
+      const { data, error } = await supabase.storage.from(bucket).download(storagePath);
+      if (error || !data) return false;
+      const arrayBuffer = await data.arrayBuffer();
+      return arrayBuffer.byteLength > 0;
+    } catch {
+      return false;
+    }
+  }
+
   // ============================================================================
   // DELIVERABLES & REVISIONS (POSTGRESQL)
   // ============================================================================
@@ -1270,6 +1285,14 @@ class PersistentDatabaseEngine {
     verificationNotes: string;
     qaChecklistPassed: boolean;
   }): Promise<DbDeliverableRecord> {
+    if (params.qaChecklistPassed !== true) {
+      throw new Error('Cannot save deliverable: QA checklist must be passed.');
+    }
+    const exists = await this.verifyStorageObjectExists('order-assets', params.storageBucketPath);
+    if (!exists) {
+      throw new Error(`Cannot save deliverable: Storage object does not exist at '${params.storageBucketPath}'.`);
+    }
+
     const supabase = this.getSupabaseAdminClient();
     const delivCode = params.id || `deliv_${crypto.randomBytes(6).toString('hex')}`;
     const delivUuid = toDeterministicUuid(`deliv:${delivCode}`);

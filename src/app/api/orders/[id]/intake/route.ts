@@ -3,6 +3,7 @@ import { persistentDB } from '@/domain/persistent-db';
 import { IntakeAndFileManager } from '@/domain/intake-and-files';
 import { OrderService } from '@/domain/order-service';
 import { requireOrderAccess } from '@/domain/auth-guard';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
 
 /**
  * POST /api/orders/[id]/intake

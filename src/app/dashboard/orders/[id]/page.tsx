@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Order, IntakeSubmission, FileAttachment } from '@/domain/types';
@@ -33,6 +33,10 @@ export default function OrderWorkspacePage() {
   const [files, setFiles] = useState<FileAttachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'timeline' | 'intake' | 'files' | 'deliverables'>('timeline');
+  const [deliverables, setDeliverables] = useState<any[]>([]);
+  const [acceptingHandover, setAcceptingHandover] = useState(false);
+  const [acceptanceSuccess, setAcceptanceSuccess] = useState<string | null>(null);
+  const [acceptanceError, setAcceptanceError] = useState<string | null>(null);
 
   // Intake Form State
   const [audience, setAudience] = useState('');
@@ -45,18 +49,20 @@ export default function OrderWorkspacePage() {
   const [intakeSuccessMsg, setIntakeSuccessMsg] = useState<string | null>(null);
 
   // File Upload State
-  const [mockFileName, setMockFileName] = useState('');
-  const [mockFileType, setMockFileType] = useState('image/png');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [sessionUser, setSessionUser] = useState<any>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [accessDeniedError, setAccessDeniedError] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
-      const [orderRes, intakeRes, filesRes] = await Promise.all([
+      const [orderRes, intakeRes, filesRes, delivRes, sessionRes] = await Promise.all([
         fetch(`/api/checkout/initiate?id=${orderId}`),
         fetch(`/api/orders/${orderId}/intake`),
         fetch(`/api/orders/${orderId}/files`),
+        fetch(`/api/orders/${orderId}/deliverables`),
+        fetch('/api/auth/session'),
       ]);
 
       if (orderRes.status === 401 || orderRes.status === 403) {
@@ -83,16 +89,52 @@ export default function OrderWorkspacePage() {
       if (filesRes.ok && filesData.files) {
         setFiles(filesData.files);
       }
+      if (delivRes && delivRes.ok) {
+        const delivData = await delivRes.json();
+        if (delivData.deliverables) {
+          setDeliverables(delivData.deliverables);
+        }
+      }
+      if (sessionRes && sessionRes.ok) {
+        const sessionData = await sessionRes.json();
+        if (sessionData.user) {
+          setSessionUser(sessionData.user);
+        }
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [orderId]);
 
   useEffect(() => {
     loadData();
-  }, [orderId]);
+  }, [loadData]);
+
+  const handleAcceptHandover = async () => {
+    setAcceptingHandover(true);
+    setAcceptanceError(null);
+    setAcceptanceSuccess(null);
+    try {
+      const res = await fetch(`/api/orders/${orderId}/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to accept handover.');
+      }
+      setAcceptanceSuccess('Handover officially accepted. Your order is complete!');
+      if (data.order) {
+        setOrder(data.order);
+      }
+    } catch (err: any) {
+      setAcceptanceError(err.message || 'Error accepting handover.');
+    } finally {
+      setAcceptingHandover(false);
+    }
+  };
 
   const handleIntakeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,7 +147,7 @@ export default function OrderWorkspacePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           businessName: order?.quoteSnapshot.businessName || 'My Business',
-          contactEmail: 'client@example.com',
+          contactEmail: sessionUser?.email || order?.customerUserId || '',
           contactWhatsApp,
           targetAudience: audience,
           brandColors,
@@ -127,31 +169,25 @@ export default function OrderWorkspacePage() {
     }
   };
 
-  const handleSimulateUpload = async (e: React.FormEvent) => {
+  const handleRealFileUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mockFileName.trim()) return;
+    if (!selectedFile) return;
 
     setUploadingFile(true);
     setUploadError(null);
 
     try {
-      // Real 1x1 PNG binary payload in base64 for private vault storage
-      const validPngBase64 =
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const formData = new FormData();
+      formData.append('file', selectedFile);
       const res = await fetch(`/api/orders/${orderId}/files`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: mockFileName,
-          mimeType: mockFileType,
-          fileContentBase64: validPngBase64,
-        }),
+        body: formData,
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed.');
 
-      setMockFileName('');
+      setSelectedFile(null);
       loadData();
     } catch (err: any) {
       setUploadError(err.message || 'Error uploading file.');
@@ -525,55 +561,45 @@ export default function OrderWorkspacePage() {
             </div>
           )}
 
-          {/* Upload Simulation Form */}
+          {/* Real Customer File Upload Form */}
           <form
-            onSubmit={handleSimulateUpload}
+            onSubmit={handleRealFileUpload}
             className="p-5 rounded-xl border border-dashed border-slate-300 bg-slate-50 space-y-3"
           >
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
               <Upload className="w-4 h-4 text-hoooplaaa-gold-600" />
-              <span>Upload New Asset</span>
+              <span>Upload Real Asset to Order</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="sm:col-span-2">
-                <input
-                  type="text"
-                  value={mockFileName}
-                  onChange={(e) => setMockFileName(e.target.value)}
-                  placeholder="e.g. brand_logo_highres.png, business_cover.svg"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900 bg-white"
-                  required
-                />
-              </div>
-
-              <div>
-                <select
-                  value={mockFileType}
-                  onChange={(e) => setMockFileType(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900 bg-white"
-                >
-                  <option value="image/png">PNG Image</option>
-                  <option value="image/jpeg">JPEG Image</option>
-                  <option value="image/svg+xml">SVG Vector</option>
-                  <option value="application/pdf">PDF Document</option>
-                  <option value="application/zip">ZIP Archive</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex justify-between items-center pt-2">
-              <span className="text-[11px] text-slate-500">
-                Permitted: PNG, JPG, SVG, PDF, ZIP. Executables strictly rejected.
-              </span>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <input
+                type="file"
+                data-testid="customer-file-input"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    setSelectedFile(e.target.files[0]);
+                  }
+                }}
+                accept=".png,.jpg,.jpeg,.webp,.svg,.pdf,.zip"
+                className="text-xs text-slate-700 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800 cursor-pointer"
+                required
+              />
               <button
                 type="submit"
-                disabled={uploadingFile}
-                className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs"
+                disabled={uploadingFile || !selectedFile}
+                className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs disabled:opacity-50"
               >
                 {uploadingFile ? 'Uploading...' : 'Save Asset to Order'}
               </button>
             </div>
+            {selectedFile && (
+              <div className="text-[11px] text-slate-600">
+                Selected: <span className="font-semibold text-slate-900">{selectedFile.name}</span> ({(selectedFile.size / 1024).toFixed(1)} KB)
+              </div>
+            )}
+            <span className="text-[11px] text-slate-500 block">
+              Permitted: PNG, JPG, WEBP, SVG, PDF, ZIP (max 25MB). Executables strictly rejected.
+            </span>
           </form>
 
           {/* Uploaded Files Table */}
@@ -594,13 +620,21 @@ export default function OrderWorkspacePage() {
                       <div className="font-semibold text-slate-900">{f.fileName}</div>
                       <div className="font-mono text-[10px] text-slate-500">{f.storagePath}</div>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right flex items-center gap-2">
                       <span className="text-[11px] text-slate-500">
                         {(f.fileSizeBytes / 1024).toFixed(0)} KB
                       </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold ml-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
                         Private / Verified
                       </span>
+                      <a
+                        href={`/api/orders/${orderId}/files?download=${f.id}`}
+                        download={f.fileName}
+                        data-testid={`download-file-${f.id}`}
+                        className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-slate-800 text-[10px] font-semibold transition"
+                      >
+                        Download
+                      </a>
                     </div>
                   </div>
                 ))}
@@ -613,36 +647,122 @@ export default function OrderWorkspacePage() {
       {/* TAB CONTENT: DELIVERABLES */}
       {activeTab === 'deliverables' && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 space-y-6">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">Deliverables & Handover Protocol</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Review completed setup assets, QA certificate, and accept handover.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Deliverables & Handover Protocol</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Review completed setup assets, QA certificate, and accept handover.
+              </p>
+            </div>
+            {order?.status === 'accepted' ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Handover Accepted</span>
+              </span>
+            ) : order?.status === 'delivered' ? (
+              <button
+                type="button"
+                data-testid="accept-handover-btn"
+                onClick={handleAcceptHandover}
+                disabled={acceptingHandover}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md transition flex items-center gap-2 self-start sm:self-auto disabled:opacity-50"
+              >
+                {acceptingHandover ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Confirming Acceptance...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Review & Accept Handover</span>
+                  </>
+                )}
+              </button>
+            ) : null}
+          </div>
+
+          {acceptanceSuccess && (
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{acceptanceSuccess}</span>
+            </div>
+          )}
+
+          {acceptanceError && (
+            <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs font-semibold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{acceptanceError}</span>
+            </div>
+          )}
+
+          {order?.status === 'accepted' && order.acceptedAt && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 text-emerald-900 text-xs space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Handover Officially Accepted</span>
+              </div>
+              <p className="text-slate-600">
+                You accepted this handover on {new Date(order.acceptedAt).toLocaleDateString()} at{' '}
+                {new Date(order.acceptedAt).toLocaleTimeString()}. Your setup handover is officially complete.
+              </p>
+            </div>
+          )}
+
+          {/* Deliverables List */}
+          <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
+            <div className="bg-slate-100 px-4 py-2.5 font-bold text-slate-700 flex justify-between">
+              <span>Deliverable Item / Evidence Pack</span>
+              <span>QA Status</span>
+            </div>
+            {deliverables.length === 0 ? (
+              <div className="p-6 text-center text-slate-400 text-xs">
+                {order?.status === 'delivered' || order?.status === 'accepted'
+                  ? 'Setup package delivered. Handover evidence pack is ready.'
+                  : 'Fulfillment is in progress. Deliverables will be presented here upon QA completion.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {deliverables.map((d: any) => (
+                  <div key={d.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="font-bold text-slate-900">{d.title}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">{d.storageBucketPath}</div>
+                      {d.verificationNotes && (
+                        <p className="text-[11px] text-slate-600 italic">“{d.verificationNotes}”</p>
+                      )}
+                    </div>
+                    <div className="shrink-0 flex items-center gap-2">
+                      {d.qaChecklistPassed && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
+                          <Check className="w-3 h-3 text-emerald-600" />
+                          <span>QA Passed</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs text-slate-700">
             <div className="font-bold text-slate-900 flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>Handover Inclusions</span>
+              <span>Verified Scope Inclusions for Your Purchased Services</span>
             </div>
-            <ul className="space-y-1.5 text-slate-600">
-              <li>• Meta Business Portfolio with verified Primary Administrator rights</li>
-              <li>• Google Business Profile management link and verification checklist</li>
-              <li>• LinkedIn Corporate Company Page with super-admin transfer</li>
-              <li>• Brand consistency audit report across all 3 channels</li>
-            </ul>
-          </div>
-
-          {/* Complimentary Post-Sale Audit Box */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-hoooplaaa-navy-950 to-hoooplaaa-navy-900 text-white space-y-2">
-            <div className="flex items-center gap-2 font-bold text-xs text-hoooplaaa-gold-400">
-              <Sparkles className="w-4 h-4" />
-              <span>Complimentary Post-Sale Detailed Audit Included</span>
+            <div className="space-y-3">
+              {order?.items.map((item) => (
+                <div key={item.id} className="space-y-1">
+                  <div className="font-bold text-slate-800">{item.name}</div>
+                  <ul className="space-y-1 text-slate-600 pl-2">
+                    {item.scopeSnapshot.inclusions.map((inc, idx) => (
+                      <li key={idx}>• {inc}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </div>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              As part of your setup, our senior strategist will deliver a post-setup audit report
-              diagnosing audience gaps, next-step campaign readiness, and pixel event hygiene.
-            </p>
           </div>
         </div>
       )}

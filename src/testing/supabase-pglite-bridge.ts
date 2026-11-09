@@ -28,6 +28,7 @@ interface GlobalTestBridgeState {
   pgPromise?: Promise<PGlite>;
   authAccounts: Map<string, TestAuthAccount>;
   activeTokens: Map<string, string>; // accessToken -> userId
+  revokedTokens: Set<string>;
   storageObjects: Map<string, { bytes: Buffer; contentType: string }>; // bucket/path -> object
 }
 
@@ -35,8 +36,12 @@ const globalState = (globalThis as unknown as { __hoooplaaaTestPgBridge?: Global
   .__hoooplaaaTestPgBridge || {
   authAccounts: new Map<string, TestAuthAccount>(),
   activeTokens: new Map<string, string>(),
+  revokedTokens: new Set<string>(),
   storageObjects: new Map<string, { bytes: Buffer; contentType: string }>(),
 };
+if (!globalState.revokedTokens) {
+  globalState.revokedTokens = new Set<string>();
+}
 (globalThis as unknown as { __hoooplaaaTestPgBridge?: GlobalTestBridgeState }).__hoooplaaaTestPgBridge =
   globalState;
 
@@ -233,6 +238,7 @@ export async function resetTestPostgresData(): Promise<void> {
     DELETE FROM public.audit_logs;
   `);
   globalState.storageObjects.clear();
+  globalState.revokedTokens?.clear();
 }
 
 function sqlLiteral(val: unknown): string {
@@ -390,6 +396,10 @@ export async function supabasePgliteFetch(
       const authHeader = headers.get('Authorization') || headers.get('authorization') || '';
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
+      if (!token || globalState.revokedTokens?.has(token)) {
+        return Response.json({ message: 'Invalid or revoked JWT' }, { status: 401 });
+      }
+
       let userId = globalState.activeTokens.get(token);
       if (!userId) {
         const m = token.match(/^sb_jwt_([0-9a-f-]{36})_/i);
@@ -420,6 +430,13 @@ export async function supabasePgliteFetch(
     }
 
     if (subPath === '/logout' && method === 'POST') {
+      const headers = new Headers(init?.headers);
+      const authHeader = headers.get('Authorization') || headers.get('authorization') || '';
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (token) {
+        globalState.activeTokens.delete(token);
+        globalState.revokedTokens?.add(token);
+      }
       return new Response(null, { status: 204 });
     }
   }
