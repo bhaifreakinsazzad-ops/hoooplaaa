@@ -1,7 +1,12 @@
 import { NextRequest } from 'next/server';
 import { persistentDB, DbUserProfile } from './persistent-db';
 import { Order } from './types';
-import { isEmailAllowedForRegistration, shouldAutoConfirmRegistrationEmail } from './registration-policy';
+import {
+  RegistrationConfigError,
+  evaluateRegistrationConfig,
+  isEmailAllowedForRegistration,
+  shouldAutoConfirmRegistrationEmail,
+} from './registration-policy';
 
 export { shouldAutoConfirmRegistrationEmail };
 
@@ -84,6 +89,10 @@ export async function registerCustomerWithSupabaseAuth(params: {
   fullName?: string;
   businessName?: string;
 }): Promise<{ user: DbUserProfile; token: string; requiresEmailConfirmation: boolean }> {
+  // Defence in depth: the route already checked this; fail closed here too for any other caller.
+  const config = evaluateRegistrationConfig();
+  if (!config.ok) throw new RegistrationConfigError(config.reason);
+
   const normalizedEmail = validateRegistrationInput(params.email, params.password);
   if (!isEmailAllowedForRegistration(normalizedEmail)) {
     throw new Error('Registration is not open for this email address in this environment.');
@@ -95,7 +104,7 @@ export async function registerCustomerWithSupabaseAuth(params: {
 
   const fullName = (params.fullName || normalizedEmail).slice(0, 200);
   const businessName = (params.businessName || params.fullName || normalizedEmail).slice(0, 200);
-  const autoConfirm = shouldAutoConfirmRegistrationEmail();
+  const autoConfirm = config.autoConfirm;
 
   const admin = persistentDB.getSupabaseAdminClient();
   const { data, error } = await admin.auth.admin.createUser({

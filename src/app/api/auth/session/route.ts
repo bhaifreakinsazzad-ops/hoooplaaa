@@ -7,12 +7,32 @@ import {
   LEGACY_SESSION_COOKIE_NAME,
 } from '@/domain/auth-guard';
 import { persistentDB } from '@/domain/persistent-db';
-import { checkRegistrationRateLimit, clientKey } from '@/domain/registration-policy';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
+import {
+  RegistrationConfigError,
+  enforceRegistrationRateLimit,
+  evaluateRegistrationConfig,
+  rejectUnlessSameOriginJson,
+} from '@/domain/registration-policy';
 
 export async function POST(req: NextRequest) {
+  // Login/registration set a session cookie: refuse cross-site requests (CSRF).
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
+  // JSON only: blocks plain HTML form posts and keeps malformed bodies from reaching the handlers.
+  if (!(req.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+    return NextResponse.json({ error: 'Unsupported content type.' }, { status: 415 });
+  }
+
   try {
-    const body = await req.json();
-    const { email, password, action, fullName, businessName } = body;
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
+    }
+    const { email, password, action, fullName, businessName } = body || {};
 
     if (!email || !password) {
       return NextResponse.json(
@@ -23,11 +43,33 @@ export async function POST(req: NextRequest) {
 
     // Self-service customer registration via Supabase Auth (always assigns 'customer' role; ignores any role in body)
     if (action === 'register') {
-      const retryAfter = checkRegistrationRateLimit(clientKey(req));
-      if (retryAfter > 0) {
+      // 1. strict same-origin + JSON content type (browsers always send Origin on cross-site POSTs)
+      const notSameOrigin = rejectUnlessSameOriginJson(req);
+      if (notSameOrigin) return notSameOrigin;
+
+      // 2. fail closed on an unsafe/misconfigured environment (no allowlist, wrong project, ...)
+      const cfg = evaluateRegistrationConfig();
+      if (!cfg.ok) {
+        console.error(`[registration] refused: ${cfg.reason}`);
+        return NextResponse.json(
+          { error: 'Registration is temporarily unavailable.' },
+          { status: 503, headers: { 'Cache-Control': 'no-store, private' } }
+        );
+      }
+
+      // 3. shared (database-backed) rate limit per client and per email; unavailable limiter => refuse
+      const rl = await enforceRegistrationRateLimit(req, String(email));
+      if (rl.status === 'limited') {
         return NextResponse.json(
           { error: 'Too many registration attempts. Please try again later.' },
-          { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store, private' } }
+          { status: 429, headers: { 'Retry-After': String(rl.retryAfter), 'Cache-Control': 'no-store, private' } }
+        );
+      }
+      if (rl.status === 'unavailable') {
+        console.error('[registration] refused: shared rate limiter unavailable (failing closed).');
+        return NextResponse.json(
+          { error: 'Registration is temporarily unavailable.' },
+          { status: 503, headers: { 'Cache-Control': 'no-store, private' } }
         );
       }
 
@@ -77,8 +119,15 @@ export async function POST(req: NextRequest) {
         });
         return response;
       } catch (regErr: any) {
+        if (regErr instanceof RegistrationConfigError) {
+          console.error(`[registration] refused: ${regErr.reason}`);
+          return NextResponse.json(
+            { error: 'Registration is temporarily unavailable.' },
+            { status: 503, headers: { 'Cache-Control': 'no-store, private' } }
+          );
+        }
         const msg = regErr?.message || 'Registration failed.';
-        const status = msg.startsWith('Conflict') || msg.includes('already') ? 409 : 400;
+        const status = msg.startsWith('Conflict') || msg.includes('already') ? 409 : msg.startsWith('Registration is not open') ? 403 : 400;
         return NextResponse.json({ error: msg }, { status });
       }
     }
