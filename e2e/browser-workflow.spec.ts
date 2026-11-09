@@ -416,12 +416,40 @@ test.describe('HOOOPLAAA V5 — Authenticated Multi-Actor Browser E2E & RBAC Sec
     expect(staffDeliverableUpload.ok()).toBe(true);
     const { file: staffDeliverableFile } = await staffDeliverableUpload.json();
 
+    // A request flag alone is not QA approval (V8.2).
+    const flagOnly = await request.post('/api/admin/orders', {
+      headers: adminHeaders,
+      data: { orderId, action: 'deliver', qaChecklistPassed: true, deliverableFileId: staffDeliverableFile.id },
+    });
+    expect(flagOnly.status()).toBe(422);
+
+    // Persisted QA review with every checklist item explicitly confirmed.
+    const reviewRes = await request.post('/api/admin/orders', {
+      headers: adminHeaders,
+      data: {
+        orderId,
+        action: 'qa_review',
+        decision: 'approved',
+        deliverableFileId: staffDeliverableFile.id,
+        notes: 'All Meta Partner and Google Business roles confirmed.',
+        checklist: {
+          scope_matches_purchased_items: true,
+          delegated_access_via_official_partner_flow: true,
+          no_customer_credentials_collected: true,
+          deliverable_file_opened_and_verified: true,
+          customer_facing_notes_accurate: true,
+        },
+      },
+    });
+    expect(reviewRes.ok()).toBe(true);
+    const { qaReview } = await reviewRes.json();
+
     const deliverRes = await request.post('/api/admin/orders', {
       headers: adminHeaders,
       data: {
         orderId,
         action: 'deliver',
-        qaChecklistPassed: true,
+        qaReviewId: qaReview.id,
         deliverableFileId: staffDeliverableFile.id,
         deliverableTitle: 'Dhaka Heritage Production Handover Pack',
         verificationNotes: 'All Meta Partner and Google Business roles confirmed.',

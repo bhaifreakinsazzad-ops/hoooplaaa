@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
 import { OrderService } from '@/domain/order-service';
 import { requireOrderAccess } from '@/domain/auth-guard';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
 
 /**
  * POST /api/checkout/manual-mfs
@@ -9,6 +10,10 @@ import { requireOrderAccess } from '@/domain/auth-guard';
  * Records the manual MFS reference and keeps financialStatus = 'pending_verification'.
  */
 export async function POST(req: NextRequest) {
+  // CSRF: cookie-authenticated state change must be same-origin.
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   try {
     const body = await req.json();
     const { orderId, transactionReference, customerPhone } = body;
@@ -70,7 +75,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Error processing manual payment submission.' },
-      { status: 500 }
+      { status: error?.name === 'OrderConcurrencyError' ? 409 : error?.name === 'OrderTransitionError' ? 422 : 500 }
     );
   }
 }

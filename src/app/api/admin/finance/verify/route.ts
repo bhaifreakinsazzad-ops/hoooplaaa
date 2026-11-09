@@ -10,6 +10,10 @@ import { rejectCrossOrigin } from '@/domain/guest-claim';
  * Staff identity is derived EXCLUSIVELY from the verified server session (`auth.user.id`), never from `req.body`.
  */
 export async function POST(req: NextRequest) {
+  // CSRF: cookie-authenticated state change must be same-origin.
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   const auth = await requireRole(req, ['finance', 'admin']);
   if (!auth.authorized) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
@@ -112,7 +116,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Error processing finance verification.' },
-      { status: 500 }
+      { status: error?.name === 'OrderConcurrencyError' ? 409 : error?.name === 'OrderTransitionError' ? 422 : 500 }
     );
   }
 }

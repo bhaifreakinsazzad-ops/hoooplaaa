@@ -187,6 +187,8 @@ export interface Order {
   assignedSpecialistName?: string;
   quoteSnapshot: QuoteSnapshot;
   organizationId?: string;
+  /** Database row version (orders.row_version) used for compare-and-swap writes. Never trusted from clients. */
+  rowVersion?: number;
 }
 
 export type PaymentMethod = 'sslcommerz' | 'bkash_direct' | 'manual_mfs' | 'bank_transfer';

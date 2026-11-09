@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { persistentDB } from '@/domain/persistent-db';
+import { persistentDB, orderWriteErrorStatus } from '@/domain/persistent-db';
 import { OrderService } from '@/domain/order-service';
 import { authenticateRequest, requireOrderAccess } from '@/domain/auth-guard';
 import { rejectCrossOrigin } from '@/domain/guest-claim';
@@ -86,14 +86,17 @@ export async function POST(
       );
     }
 
+    // Only deliverables bound (in the database) to an approved QA review and an owned staff file count, and
+    // the stored bytes must still match the recorded SHA-256.
     let verifiedDeliverableFound = false;
     for (const d of deliverables) {
-      if (d.qaChecklistPassed === true && d.storageBucketPath) {
-        const exists = await persistentDB.verifyStorageObjectExists('order-assets', d.storageBucketPath);
-        if (exists) {
-          verifiedDeliverableFound = true;
-          break;
-        }
+      if (d.qaChecklistPassed !== true || !d.qaReviewUuid || !d.fileId) continue;
+      const file = await persistentDB.getOrderFile(order.id, d.fileId);
+      if (!file || file.category !== 'deliverable' || file.sha256Hash !== d.fileSha256) continue;
+      const read = await persistentDB.readVerifiedFile(file);
+      if (read.status === 'ok') {
+        verifiedDeliverableFound = true;
+        break;
       }
     }
 
@@ -104,8 +107,10 @@ export async function POST(
       );
     }
 
-    const updated = OrderService.acceptHandover(order, access.user.id);
-    await persistentDB.saveOrder(updated, order.organizationId);
+    // Version-checked: a concurrent acceptance resolves idempotently instead of overwriting.
+    const updated = await persistentDB.transitionOrder(order.id, (current) =>
+      current.status === 'accepted' ? current : OrderService.acceptHandover(current, access.user.id)
+    );
 
     await persistentDB.recordAuditLog({
       actorId: access.user.id,
@@ -128,7 +133,7 @@ export async function POST(
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Error processing handover acceptance.' },
-      { status: 500 }
+      { status: error?.name === 'OrderConcurrencyError' || error?.name === 'OrderTransitionError' ? orderWriteErrorStatus(error) : 500 }
     );
   }
 }

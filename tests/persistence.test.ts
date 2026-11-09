@@ -4,6 +4,7 @@ import { calculateServerQuote } from '../src/domain/pricing-engine';
 import { OrderService } from '../src/domain/order-service';
 import { persistentDB, toDeterministicUuid } from '../src/domain/persistent-db';
 import { IntakeAndFileManager } from '../src/domain/intake-and-files';
+import { approveAndDeliver, seedOrderInQaReview } from './helpers/delivery-fixtures';
 
 describe('Relational Database Persistence, Restart Durability & Private File Integrity (V5)', () => {
   it('1. Persists quotes, orders, intakes, and audit logs asynchronously in SQL', async () => {
@@ -169,38 +170,18 @@ describe('Relational Database Persistence, Restart Durability & Private File Int
       quote,
       '00000000-0000-4000-a000-000000000001'
     );
-    await persistentDB.saveOrder(order, '10000000-0000-4000-a000-000000000001');
-
-    const realPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
-    await persistentDB.savePrivateFileWithBytes(
-      {
-        id: `deliv_${Date.now()}`,
-        orderId: order.id,
-        uploadedByUserId: '00000000-0000-4000-a000-000000000004',
-        fileName: 'handover.pdf',
-        mimeType: 'application/pdf',
-        storagePath: `orders/${order.id}/handover.pdf`,
-        fileSizeBytes: realPdfBytes.length,
-        isPrivate: true,
-        category: 'deliverable',
-        uploadedAt: new Date().toISOString(),
-      },
-      realPdfBytes
-    );
-
-    const deliverable = await persistentDB.saveDeliverable({
-      orderId: order.id,
-      uploadedBy: '00000000-0000-4000-a000-000000000004',
+    await seedOrderInQaReview(order, '10000000-0000-4000-a000-000000000001');
+    await approveAndDeliver(order.id, {
       title: 'Meta Business Portfolio Handover Pack',
-      storageBucketPath: `orders/${order.id}/handover.pdf`,
-      verificationNotes: 'Partner ID 8899110022 delegated and verified.',
-      qaChecklistPassed: true,
+      notes: 'Partner ID 8899110022 delegated and verified.',
     });
-    expect(deliverable.qaChecklistPassed).toBe(true);
 
     const deliverablesList = await persistentDB.getDeliverables(order.id);
     expect(deliverablesList.length).toBe(1);
     expect(deliverablesList[0].title).toBe('Meta Business Portfolio Handover Pack');
+    expect(deliverablesList[0].qaChecklistPassed).toBe(true);
+    expect(deliverablesList[0].qaReviewUuid).toBeTruthy();
+    expect(deliverablesList[0].fileSha256).toMatch(/^[0-9a-f]{64}$/);
 
     const revision = await persistentDB.saveRevision({
       orderId: order.id,

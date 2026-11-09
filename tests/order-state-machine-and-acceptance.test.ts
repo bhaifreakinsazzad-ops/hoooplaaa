@@ -9,6 +9,7 @@ import { resetTestPostgresData } from '../src/testing/supabase-pglite-bridge';
 import { POST as acceptPost } from '../src/app/api/orders/[id]/accept/route';
 import { GET as deliverablesGet } from '../src/app/api/orders/[id]/deliverables/route';
 import { DELETE as sessionDelete, GET as sessionGet } from '../src/app/api/auth/session/route';
+import { approveAndDeliver, seedOrderInQaReview } from './helpers/delivery-fixtures';
 
 const BASE = 'http://localhost:3000';
 
@@ -277,38 +278,9 @@ describe('Order State Machine & Customer Acceptance Protocol', () => {
       });
       const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
       order.organizationId = '10000000-0000-4000-a000-000000000001';
-      order.financialStatus = 'paid';
-      order.intakeStatus = 'completed';
-      order.status = 'delivered';
-      order.deliveredAt = new Date().toISOString();
-      await persistentDB.saveOrder(order, order.organizationId);
-
-      // Store actual deliverable file in private storage
-      const realPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
-      await persistentDB.savePrivateFileWithBytes(
-        {
-          id: `deliv_file_${Date.now()}`,
-          orderId: order.id,
-          uploadedByUserId: '00000000-0000-4000-a000-000000000004',
-          fileName: 'handover_pack.pdf',
-          mimeType: 'application/pdf',
-          storagePath: `orders/${order.id}/handover_pack.pdf`,
-          fileSizeBytes: realPdfBytes.length,
-          isPrivate: true,
-          category: 'deliverable',
-          uploadedAt: new Date().toISOString(),
-        },
-        realPdfBytes
-      );
-
-      await persistentDB.saveDeliverable({
-        orderId: order.id,
-        uploadedBy: '00000000-0000-4000-a000-000000000004',
-        title: 'Meta Business Manager Handover Credentials Pack',
-        storageBucketPath: `orders/${order.id}/handover_pack.pdf`,
-        verificationNotes: 'Primary Admin transfer completed and verified',
-        qaChecklistPassed: true,
-      });
+      await seedOrderInQaReview(order, order.organizationId);
+      // Real chain: staff deliverable bytes -> persisted approved QA review -> atomic delivery
+      await approveAndDeliver(order.id, { title: 'Meta Business Manager Handover Pack' });
 
       // 1. Initial acceptance succeeds
       const res = await acceptPost(
@@ -367,36 +339,8 @@ describe('Order State Machine & Customer Acceptance Protocol', () => {
       });
       const order = OrderService.createOrderFromQuote(quote, '00000000-0000-4000-a000-000000000001');
       order.organizationId = '10000000-0000-4000-a000-000000000001';
-      order.financialStatus = 'paid';
-      order.status = 'delivered';
-      order.deliveredAt = new Date().toISOString();
-      await persistentDB.saveOrder(order, order.organizationId);
-
-      const metaPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
-      await persistentDB.savePrivateFileWithBytes(
-        {
-          id: `deliv_meta_${Date.now()}`,
-          orderId: order.id,
-          uploadedByUserId: '00000000-0000-4000-a000-000000000004',
-          fileName: 'meta_pack.pdf',
-          mimeType: 'application/pdf',
-          storagePath: `orders/${order.id}/meta_pack.pdf`,
-          fileSizeBytes: metaPdfBytes.length,
-          isPrivate: true,
-          category: 'deliverable',
-          uploadedAt: new Date().toISOString(),
-        },
-        metaPdfBytes
-      );
-
-      await persistentDB.saveDeliverable({
-        orderId: order.id,
-        uploadedBy: '00000000-0000-4000-a000-000000000004',
-        title: 'Meta Setup Handover Pack',
-        storageBucketPath: `orders/${order.id}/meta_pack.pdf`,
-        verificationNotes: 'All verified',
-        qaChecklistPassed: true,
-      });
+      await seedOrderInQaReview(order, order.organizationId);
+      await approveAndDeliver(order.id, { title: 'Meta Setup Handover Pack', notes: 'All verified' });
 
       // 1. Unauthenticated -> 401
       const unauth = await deliverablesGet(

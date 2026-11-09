@@ -1,5 +1,6 @@
 import { FileAttachment, IntakeSubmission } from './types';
 import crypto from 'crypto';
+import { QA_CHECKLIST_ITEMS, QaChecklistKey } from './qa-checklist';
 
 export const ALLOWED_MIME_TYPES = [
   'image/png',
@@ -33,6 +34,109 @@ export interface FileValidationResult {
   error?: string;
 }
 
+export const FILE_CATEGORIES = ['client_asset', 'deliverable'] as const;
+export type FileCategory = (typeof FILE_CATEGORIES)[number];
+
+export function isFileCategory(value: unknown): value is FileCategory {
+  return typeof value === 'string' && (FILE_CATEGORIES as readonly string[]).includes(value);
+}
+
+/** Storage folder per category. Mirrors public.guard_order_file() in the V8.2 migration. */
+export const CATEGORY_FOLDERS: Record<FileCategory, string> = {
+  client_asset: 'client_assets',
+  deliverable: 'deliverables',
+};
+
+/** Reduce a user-supplied file name to a safe storage object name (the original name is kept as metadata). */
+export function sanitizeStorageFileName(fileName: string): string {
+  const base = fileName.normalize('NFKC').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_');
+  const trimmed = base.replace(/^[._]+/, '').slice(-120);
+  return trimmed.length > 0 ? trimmed : 'file';
+}
+
+export function buildStoragePath(orderId: string, category: FileCategory, fileId: string, fileName: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(orderId)) {
+    throw new Error('Invalid order id for storage path.');
+  }
+  return `orders/${orderId}/${CATEGORY_FOLDERS[category]}/${fileId}_${sanitizeStorageFileName(fileName)}`;
+}
+
+/** Returns an error message when the declared file name is unsafe, otherwise null. */
+export function validateFileName(fileName: string): string | null {
+  if (typeof fileName !== 'string' || fileName.trim().length === 0) return 'A file name is required.';
+  if (fileName.length > 200) return 'File name is too long (max 200 characters).';
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(fileName)) return 'File name contains control characters.';
+  if (/[\\/]/.test(fileName) || fileName.includes('..')) return 'File name must not contain path separators or "..".';
+  return null;
+}
+
+export { QA_CHECKLIST_ITEMS } from './qa-checklist';
+export type { QaChecklistKey } from './qa-checklist';
+
+/** Returns the keys that are not explicitly confirmed (true) in a submitted checklist. */
+export function missingQaChecklistItems(checklist: unknown): QaChecklistKey[] {
+  const c =
+    checklist && typeof checklist === 'object' && !Array.isArray(checklist)
+      ? (checklist as Record<string, unknown>)
+      : {};
+  return QA_CHECKLIST_ITEMS.filter((i) => c[i.key] !== true).map((i) => i.key);
+}
+
+/** Normalises a checklist to exactly the known keys with boolean values. */
+export function normaliseQaChecklist(checklist: unknown): Record<QaChecklistKey, boolean> {
+  const c =
+    checklist && typeof checklist === 'object' && !Array.isArray(checklist)
+      ? (checklist as Record<string, unknown>)
+      : {};
+  const out = {} as Record<QaChecklistKey, boolean>;
+  for (const i of QA_CHECKLIST_ITEMS) out[i.key] = c[i.key] === true;
+  return out;
+}
+
+export function sha256Hex(bytes: Buffer | Uint8Array): string {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+const SVG_FORBIDDEN_PATTERNS: Array<[RegExp, string]> = [
+  [/<script[\s>/]/i, 'script elements'],
+  [/<foreignobject[\s>/]/i, 'foreignObject elements'],
+  [/<(iframe|embed|object|audio|video|link|meta|base|form|input|button|style)[\s>/]/i, 'embedded or active elements'],
+  [/<!doctype/i, 'DOCTYPE declarations'],
+  [/<!entity/i, 'XML entity declarations'],
+  [/<\?xml-stylesheet/i, 'external stylesheets'],
+  [/\son[a-z]+\s*=/i, 'event-handler attributes'],
+  [/(javascript|vbscript|data)\s*:/i, 'script or data URLs'],
+  [/(?:xlink:)?href\s*=\s*["']?\s*(?!#)[^"'\s>]/i, 'external references'],
+  [/@import|url\s*\(\s*["']?\s*(?!#)/i, 'external CSS references'],
+  [/<(set|animate)[^>]*attributename\s*=\s*["']?\s*(href|xlink:href|on)/i, 'animated link/handler attributes'],
+];
+
+/**
+ * SVG is XML that browsers can execute. Uploads are accepted only when they are a plain, self-contained
+ * <svg> document with no scripts, handlers, entities, external references or embedded HTML. Downloads are
+ * additionally served as attachments under a sandboxing CSP (see the files route).
+ */
+export function inspectSvg(fileBytes: Buffer): FileValidationResult {
+  const text = fileBytes.toString('utf8');
+  if (text.includes('\u0000')) {
+    return { isValid: false, error: 'SVG contains NUL bytes. Upload rejected.' };
+  }
+  const head = text.slice(0, 2048).replace(/^﻿/, '').trimStart().toLowerCase();
+  const startsOk = head.startsWith('<svg') || (head.startsWith('<?xml') && /<svg[\s>]/.test(head));
+  if (!startsOk || !/<\/svg>\s*$/i.test(text.trimEnd())) {
+    return { isValid: false, error: 'File content does not match declared SVG format.' };
+  }
+  // Decode numeric character references for ':' so "javascript&#58;" cannot slip past the URL checks.
+  const normalised = text.replace(/&#(?:x0*3a|0*58);?/gi, ':').replace(/\s+/g, ' ');
+  for (const [pattern, label] of SVG_FORBIDDEN_PATTERNS) {
+    if (pattern.test(normalised)) {
+      return { isValid: false, error: `SVG rejected: ${label} are not permitted in uploaded SVG files.` };
+    }
+  }
+  return { isValid: true };
+}
+
 export class IntakeAndFileManager {
   /**
    * Validates file upload for security and type safety.
@@ -45,6 +149,9 @@ export class IntakeAndFileManager {
     mimeType: string,
     fileBytes?: Buffer
   ): FileValidationResult {
+    const nameError = validateFileName(fileName);
+    if (nameError) return { isValid: false, error: nameError };
+
     const ext = fileName.includes('.')
       ? fileName.slice(fileName.lastIndexOf('.')).toLowerCase()
       : '';
@@ -132,10 +239,8 @@ export class IntakeAndFileManager {
         const isZip = fileBytes.length >= 4 && fileBytes[0] === 0x50 && fileBytes[1] === 0x4b;
         if (!isZip) return { isValid: false, error: 'File content does not match declared ZIP archive format.' };
       } else if (mimeType === 'image/svg+xml') {
-        const text = fileBytes.slice(0, 1024).toString('utf8').toLowerCase();
-        if (!text.includes('<svg') && !text.includes('<?xml')) {
-          return { isValid: false, error: 'File content does not match declared SVG format.' };
-        }
+        const svgCheck = inspectSvg(fileBytes);
+        if (!svgCheck.isValid) return svgCheck;
       }
     }
 
@@ -158,8 +263,11 @@ export class IntakeAndFileManager {
       throw new Error(validation.error);
     }
 
+    if (!isFileCategory(category)) {
+      throw new Error(`Invalid file category '${category}'. Allowed: ${FILE_CATEGORIES.join(', ')}.`);
+    }
     const fileId = `file_${crypto.randomBytes(8).toString('hex')}`;
-    const storagePath = `orders/${orderId}/client_assets/${fileId}_${encodeURIComponent(fileName)}`;
+    const storagePath = buildStoragePath(orderId, category, fileId, fileName);
 
     return {
       id: fileId,

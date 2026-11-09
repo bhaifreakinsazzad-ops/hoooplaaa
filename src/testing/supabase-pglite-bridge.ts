@@ -226,8 +226,9 @@ async function seedTestAccountsInternal(
 export async function resetTestPostgresData(): Promise<void> {
   const pg = await getInitializedTestPostgres();
   await pg.exec(`
-    DELETE FROM public.order_files;
     DELETE FROM public.order_deliverables;
+    DELETE FROM public.order_qa_reviews;
+    DELETE FROM public.order_files;
     DELETE FROM public.order_revisions;
     DELETE FROM public.order_intakes;
     DELETE FROM public.payment_events;
