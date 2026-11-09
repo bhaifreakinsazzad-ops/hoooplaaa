@@ -1,6 +1,9 @@
 import { NextRequest } from 'next/server';
 import { persistentDB, DbUserProfile } from './persistent-db';
 import { Order } from './types';
+import { isEmailAllowedForRegistration, shouldAutoConfirmRegistrationEmail } from './registration-policy';
+
+export { shouldAutoConfirmRegistrationEmail };
 
 export const SESSION_COOKIE_NAME = 'sb-access-token';
 export const LEGACY_SESSION_COOKIE_NAME = 'hoooplaaa_session';
@@ -70,24 +73,6 @@ export function validateRegistrationInput(email: string, password: string): stri
 }
 
 /**
- * Whether newly registered customers are marked email-confirmed immediately.
- * Deployed environments (staging/production/preview) default to NOT auto-confirming; set
- * REGISTRATION_AUTO_CONFIRM_EMAIL=true only where no email delivery exists and the owner accepts unverified
- * addresses. Local/test runs auto-confirm so the harness can sign in.
- */
-export function shouldAutoConfirmRegistrationEmail(): boolean {
-  if (process.env.REGISTRATION_AUTO_CONFIRM_EMAIL === 'true') return true;
-  if (process.env.REGISTRATION_AUTO_CONFIRM_EMAIL === 'false') return false;
-  return !(
-    process.env.NODE_ENV === 'production' ||
-    process.env.APP_ENV === 'staging' ||
-    process.env.APP_ENV === 'production' ||
-    process.env.VERCEL_ENV === 'preview' ||
-    process.env.VERCEL_ENV === 'production'
-  );
-}
-
-/**
  * Registers a new customer SERVER-SIDE through the Supabase Auth Admin API (service role), so the project can keep
  * public sign-up (enable_signup) disabled. The role is always forced to 'customer' in public.user_profiles
  * regardless of request payload. If profile provisioning fails, the just-created auth user is removed so no orphan
@@ -100,6 +85,9 @@ export async function registerCustomerWithSupabaseAuth(params: {
   businessName?: string;
 }): Promise<{ user: DbUserProfile; token: string; requiresEmailConfirmation: boolean }> {
   const normalizedEmail = validateRegistrationInput(params.email, params.password);
+  if (!isEmailAllowedForRegistration(normalizedEmail)) {
+    throw new Error('Registration is not open for this email address in this environment.');
+  }
   const existing = await persistentDB.getUserByEmail(normalizedEmail);
   if (existing) {
     throw new Error('Conflict: An account with this email already exists.');

@@ -7,6 +7,7 @@ import {
   shouldAutoConfirmRegistrationEmail,
   validateRegistrationInput,
 } from '../src/domain/auth-guard';
+import { isEmailAllowedForRegistration, resetRegistrationRateLimitForTests } from '../src/domain/registration-policy';
 import { getInitializedTestPostgres } from '../src/testing/supabase-pglite-bridge';
 import { POST as sessionPost } from '../src/app/api/auth/session/route';
 
@@ -33,9 +34,11 @@ function post(body: unknown) {
 describe('server-side customer registration (LOCAL ONLY)', () => {
   beforeEach(async () => {
     await getInitializedTestPostgres();
+    resetRegistrationRateLimitForTests();
   });
   afterEach(() => {
     delete process.env.REGISTRATION_AUTO_CONFIRM_EMAIL;
+    delete process.env.REGISTRATION_EMAIL_ALLOWLIST;
     vi.restoreAllMocks();
   });
 
@@ -94,25 +97,45 @@ describe('server-side customer registration (LOCAL ONLY)', () => {
     expect((await persistentDB.getUserByEmail(email))?.role).toBe('customer');
   });
 
-  it('5. default confirmation policy: auto-confirm locally, NOT in deployed environments unless explicitly enabled', () => {
+  it('5. confirmation policy: production can NEVER auto-confirm; the flag only works on explicit staging or local runs', () => {
     const keys = ['NODE_ENV', 'APP_ENV', 'VERCEL_ENV', 'REGISTRATION_AUTO_CONFIRM_EMAIL'] as const;
     const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    const set = (env: Record<string, string | undefined>) => {
+      for (const k of keys) delete (process.env as any)[k];
+      for (const [k, v] of Object.entries(env)) if (v !== undefined) (process.env as any)[k] = v;
+    };
     try {
-      delete process.env.REGISTRATION_AUTO_CONFIRM_EMAIL;
-      delete process.env.APP_ENV;
-      delete process.env.VERCEL_ENV;
-      (process.env as any).NODE_ENV = 'test';
-      expect(shouldAutoConfirmRegistrationEmail()).toBe(true);
-      process.env.APP_ENV = 'staging';
+      set({ NODE_ENV: 'test' });
+      expect(shouldAutoConfirmRegistrationEmail()).toBe(true); // local default
+      set({ NODE_ENV: 'test', REGISTRATION_AUTO_CONFIRM_EMAIL: 'false' });
       expect(shouldAutoConfirmRegistrationEmail()).toBe(false);
-      delete process.env.APP_ENV;
-      process.env.VERCEL_ENV = 'preview';
-      expect(shouldAutoConfirmRegistrationEmail()).toBe(false);
-      process.env.REGISTRATION_AUTO_CONFIRM_EMAIL = 'true';
+      // deployed, flag unset -> strict everywhere
+      for (const env of [
+        { NODE_ENV: 'production', APP_ENV: 'staging', VERCEL_ENV: 'preview' },
+        { NODE_ENV: 'production', VERCEL_ENV: 'preview' },
+        { NODE_ENV: 'production' },
+        { NODE_ENV: 'production', APP_ENV: 'production', VERCEL_ENV: 'production' },
+      ]) {
+        set(env);
+        expect(shouldAutoConfirmRegistrationEmail()).toBe(false);
+      }
+      // flag=true honoured ONLY on explicitly marked staging (or local)
+      set({ NODE_ENV: 'production', APP_ENV: 'staging', VERCEL_ENV: 'preview', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' });
       expect(shouldAutoConfirmRegistrationEmail()).toBe(true);
+      // ...never on production, however the production marker is expressed
+      for (const env of [
+        { NODE_ENV: 'production', VERCEL_ENV: 'production', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' },
+        { NODE_ENV: 'production', APP_ENV: 'production', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' },
+        { NODE_ENV: 'production', APP_ENV: 'staging', VERCEL_ENV: 'production', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' },
+        { NODE_ENV: 'production', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' }, // unmarked production-like
+        { NODE_ENV: 'production', VERCEL_ENV: 'preview', REGISTRATION_AUTO_CONFIRM_EMAIL: 'true' }, // preview without staging marker
+      ]) {
+        set(env);
+        expect(shouldAutoConfirmRegistrationEmail()).toBe(false);
+      }
     } finally {
       for (const k of keys) {
-        if (saved[k] === undefined) delete process.env[k];
+        if (saved[k] === undefined) delete (process.env as any)[k];
         else (process.env as any)[k] = saved[k];
       }
     }
@@ -133,4 +156,48 @@ describe('server-side customer registration (LOCAL ONLY)', () => {
     expect(src).not.toMatch(/\.auth\.signUp\(/);
     expect(src).toMatch(/auth\.admin\.createUser/);
   });
+
+  it('8. staging email allowlist: when set, only listed addresses/domains may register (403-style 400, nothing created)', async () => {
+    process.env.REGISTRATION_EMAIL_ALLOWLIST = 'tester@example.com, @allowed.test';
+    try {
+      const blocked = uniqueEmail();
+      const r = await post({ action: 'register', email: blocked, password: 'A-Long-Test-Password-1!' });
+      expect(r.status).toBe(400);
+      expect(await persistentDB.getUserByEmail(blocked)).toBeFalsy();
+      expect(isEmailAllowedForRegistration('Tester@Example.com')).toBe(true);
+      expect(isEmailAllowedForRegistration('anyone@allowed.test')).toBe(true);
+      expect(isEmailAllowedForRegistration('anyone@evil-allowed.test.attacker.io')).toBe(false);
+      const ok = await post({ action: 'register', email: 'ok-' + Date.now() + '@allowed.test', password: 'A-Long-Test-Password-1!' });
+      expect(ok.status).toBe(200);
+    } finally {
+      delete process.env.REGISTRATION_EMAIL_ALLOWLIST;
+    }
+    expect(isEmailAllowedForRegistration('anyone@anywhere.io')).toBe(true); // unset -> open
+  });
+
+  it('9. registration is rate limited per client: the 6th attempt in a window gets 429 with Retry-After', async () => {
+    const from = (ip: string) =>
+      sessionPost(
+        new NextRequest(BASE + '/api/auth/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': ip },
+          body: JSON.stringify({ action: 'register', email: 'not-an-email', password: 'x' }),
+        })
+      );
+    for (let i = 0; i < 5; i++) expect((await from('203.0.113.9')).status).toBe(400);
+    const limited = await from('203.0.113.9');
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await from('203.0.113.10')).status).toBe(400); // another client unaffected
+    // login attempts are not counted against the registration limiter
+    const login = await sessionPost(
+      new NextRequest(BASE + '/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '203.0.113.9' },
+        body: JSON.stringify({ email: 'nobody@example.com', password: 'wrong-password-123' }),
+      })
+    );
+    expect(login.status).toBe(401);
+  });
+
 });

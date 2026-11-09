@@ -7,6 +7,7 @@ import {
   LEGACY_SESSION_COOKIE_NAME,
 } from '@/domain/auth-guard';
 import { persistentDB } from '@/domain/persistent-db';
+import { checkRegistrationRateLimit, clientKey } from '@/domain/registration-policy';
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,6 +23,14 @@ export async function POST(req: NextRequest) {
 
     // Self-service customer registration via Supabase Auth (always assigns 'customer' role; ignores any role in body)
     if (action === 'register') {
+      const retryAfter = checkRegistrationRateLimit(clientKey(req));
+      if (retryAfter > 0) {
+        return NextResponse.json(
+          { error: 'Too many registration attempts. Please try again later.' },
+          { status: 429, headers: { 'Retry-After': String(retryAfter), 'Cache-Control': 'no-store, private' } }
+        );
+      }
+
       try {
         const { user: created, token, requiresEmailConfirmation } = await registerCustomerWithSupabaseAuth({
           email,
