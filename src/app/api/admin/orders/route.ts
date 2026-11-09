@@ -57,29 +57,42 @@ export async function POST(req: NextRequest) {
     } else if (action === 'submit_qa') {
       updated = OrderService.submitForQA(order);
     } else if (action === 'deliver') {
-      updated = OrderService.deliverOrder(order);
+      const qaPassed = body.qaPassed !== false && body.qaChecklistPassed !== false;
+      if (!qaPassed) {
+        return NextResponse.json(
+          { error: 'Cannot deliver order: QA checklist must be passed.' },
+          { status: 422 }
+        );
+      }
+
+      // Check if real files exist for this order in private storage or if an explicit path was supplied
+      const orderFiles = await persistentDB.getFiles(order.id);
+      const storagePath =
+        deliverablePath || (orderFiles.length > 0 ? orderFiles[0].storagePath : `orders/${order.id}/handover-pack.pdf`);
+
+      updated = OrderService.deliverOrder(order, { qaChecklistPassed: qaPassed });
       await persistentDB.saveDeliverable({
         orderId: order.id,
         uploadedBy: auth.user.id,
         title: deliverableTitle || 'Setup Verification & Handover Evidence Pack',
-        storageBucketPath: deliverablePath || `orders/${order.id}/handover-pack.pdf`,
+        storageBucketPath: storagePath,
         verificationNotes:
           verificationNotes ||
           'All owner-approved setup scope items verified and delegated via official Partner ID.',
         qaChecklistPassed: true,
       });
     } else if (action === 'request_revision') {
+      updated = OrderService.requestRevision(order, revisionNotes);
       await persistentDB.saveRevision({
         orderId: order.id,
         requestedBy: auth.user.id,
         revisionNotes: revisionNotes || 'Revision requested on setup configuration.',
       });
     } else if (action === 'accept') {
-      updated = OrderService.acceptHandover(order);
+      updated = OrderService.acceptHandover(order, auth.user.id);
     } else {
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
-
     await persistentDB.saveOrder(updated, order.organizationId);
     await persistentDB.recordAuditLog({
       actorId: auth.user.id,

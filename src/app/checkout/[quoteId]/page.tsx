@@ -82,8 +82,8 @@ export default function CheckoutPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load quote.');
         setQuote(data.quote);
-        if (data.quote.businessName && !authFullName) {
-          setAuthFullName(data.quote.businessName);
+        if (data.quote.businessName) {
+          setAuthFullName((prev) => prev || data.quote.businessName);
         }
       } catch (err: any) {
         setError(err.message || 'Error fetching quote.');

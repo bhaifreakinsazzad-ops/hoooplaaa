@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Order, IntakeSubmission, FileAttachment } from '@/domain/types';
@@ -33,6 +33,10 @@ export default function OrderWorkspacePage() {
   const [files, setFiles] = useState<FileAttachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'timeline' | 'intake' | 'files' | 'deliverables'>('timeline');
+  const [deliverables, setDeliverables] = useState<any[]>([]);
+  const [acceptingHandover, setAcceptingHandover] = useState(false);
+  const [acceptanceSuccess, setAcceptanceSuccess] = useState<string | null>(null);
+  const [acceptanceError, setAcceptanceError] = useState<string | null>(null);
 
   // Intake Form State
   const [audience, setAudience] = useState('');
@@ -51,12 +55,13 @@ export default function OrderWorkspacePage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [accessDeniedError, setAccessDeniedError] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
-      const [orderRes, intakeRes, filesRes] = await Promise.all([
+      const [orderRes, intakeRes, filesRes, delivRes] = await Promise.all([
         fetch(`/api/checkout/initiate?id=${orderId}`),
         fetch(`/api/orders/${orderId}/intake`),
         fetch(`/api/orders/${orderId}/files`),
+        fetch(`/api/orders/${orderId}/deliverables`),
       ]);
 
       if (orderRes.status === 401 || orderRes.status === 403) {
@@ -83,16 +88,46 @@ export default function OrderWorkspacePage() {
       if (filesRes.ok && filesData.files) {
         setFiles(filesData.files);
       }
+      if (delivRes && delivRes.ok) {
+        const delivData = await delivRes.json();
+        if (delivData.deliverables) {
+          setDeliverables(delivData.deliverables);
+        }
+      }
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [orderId]);
 
   useEffect(() => {
     loadData();
-  }, [orderId]);
+  }, [loadData]);
+
+  const handleAcceptHandover = async () => {
+    setAcceptingHandover(true);
+    setAcceptanceError(null);
+    setAcceptanceSuccess(null);
+    try {
+      const res = await fetch(`/api/orders/${orderId}/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to accept handover.');
+      }
+      setAcceptanceSuccess('Handover officially accepted. Your order is complete!');
+      if (data.order) {
+        setOrder(data.order);
+      }
+    } catch (err: any) {
+      setAcceptanceError(err.message || 'Error accepting handover.');
+    } finally {
+      setAcceptingHandover(false);
+    }
+  };
 
   const handleIntakeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -613,11 +648,102 @@ export default function OrderWorkspacePage() {
       {/* TAB CONTENT: DELIVERABLES */}
       {activeTab === 'deliverables' && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 space-y-6">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">Deliverables & Handover Protocol</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Review completed setup assets, QA certificate, and accept handover.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Deliverables & Handover Protocol</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Review completed setup assets, QA certificate, and accept handover.
+              </p>
+            </div>
+            {order?.status === 'accepted' ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-300">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Handover Accepted</span>
+              </span>
+            ) : order?.status === 'delivered' ? (
+              <button
+                type="button"
+                onClick={handleAcceptHandover}
+                disabled={acceptingHandover}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md transition flex items-center gap-2 self-start sm:self-auto disabled:opacity-50"
+              >
+                {acceptingHandover ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Confirming Acceptance...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Review & Accept Handover</span>
+                  </>
+                )}
+              </button>
+            ) : null}
+          </div>
+
+          {acceptanceSuccess && (
+            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{acceptanceSuccess}</span>
+            </div>
+          )}
+
+          {acceptanceError && (
+            <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs font-semibold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{acceptanceError}</span>
+            </div>
+          )}
+
+          {order?.status === 'accepted' && order.acceptedAt && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 text-emerald-900 text-xs space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                <span>Handover Officially Accepted</span>
+              </div>
+              <p className="text-slate-600">
+                You accepted this handover on {new Date(order.acceptedAt).toLocaleDateString()} at{' '}
+                {new Date(order.acceptedAt).toLocaleTimeString()}. Your warranty & support period is now active.
+              </p>
+            </div>
+          )}
+
+          {/* Deliverables List */}
+          <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
+            <div className="bg-slate-100 px-4 py-2.5 font-bold text-slate-700 flex justify-between">
+              <span>Deliverable Item / Evidence Pack</span>
+              <span>QA Status</span>
+            </div>
+            {deliverables.length === 0 ? (
+              <div className="p-6 text-center text-slate-400 text-xs">
+                {order?.status === 'delivered' || order?.status === 'accepted'
+                  ? 'Setup package delivered. Handover evidence pack is ready.'
+                  : 'Fulfillment is in progress. Deliverables will be presented here upon QA completion.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {deliverables.map((d: any) => (
+                  <div key={d.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="font-bold text-slate-900">{d.title}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">{d.storageBucketPath}</div>
+                      {d.verificationNotes && (
+                        <p className="text-[11px] text-slate-600 italic">“{d.verificationNotes}”</p>
+                      )}
+                    </div>
+                    <div className="shrink-0 flex items-center gap-2">
+                      {d.qaChecklistPassed && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-semibold">
+                          <Check className="w-3 h-3 text-emerald-600" />
+                          <span>QA Passed</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs text-slate-700">
