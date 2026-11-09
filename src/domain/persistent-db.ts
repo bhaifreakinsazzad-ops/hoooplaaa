@@ -27,10 +27,30 @@ import {
   UserRole,
 } from './types';
 import { OrderService } from './order-service';
-import {
-  supabasePgliteFetch,
-  resetTestPostgresData,
-} from '../testing/supabase-pglite-bridge';
+/**
+ * The PGlite test bridge (and its seeded test accounts) is loaded lazily and ONLY when
+ * SUPABASE_TEST_BRIDGE=true (which resolveSupabaseConfig refuses on any Vercel/staging/production
+ * deployment). There is deliberately no static import of src/testing from application code.
+ */
+const lazyBridgeFetch: typeof fetch = async (input, init) => {
+  assertTestBridgeAllowed();
+  const mod = await import('../testing/supabase-pglite-bridge');
+  return mod.supabasePgliteFetch(input, init);
+};
+
+function assertTestBridgeAllowed(): void {
+  if (process.env.SUPABASE_TEST_BRIDGE !== 'true') {
+    throw new Error('SupabaseConfigurationError: test bridge invoked without SUPABASE_TEST_BRIDGE=true.');
+  }
+  if (
+    process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.APP_ENV === 'production' ||
+    process.env.APP_ENV === 'staging'
+  ) {
+    throw new Error('SupabaseConfigurationError: SUPABASE_TEST_BRIDGE cannot run in a deployed environment.');
+  }
+}
 
 export interface DbUserProfile {
   id: string; // UUID referencing auth.users.id
@@ -126,6 +146,7 @@ class PersistentDatabaseEngine {
 
     if (isTestBridge) {
       if (
+        process.env.VERCEL ||
         process.env.APP_ENV === 'production' ||
         process.env.APP_ENV === 'staging' ||
         process.env.VERCEL_ENV === 'production' ||
@@ -176,7 +197,7 @@ class PersistentDatabaseEngine {
       const cfg = this.resolveSupabaseConfig();
       this.adminClient = createClient(cfg.supabaseUrl, cfg.serviceRoleKey, {
         auth: { persistSession: false, autoRefreshToken: false },
-        ...(cfg.isTestBridge ? { global: { fetch: supabasePgliteFetch } } : {}),
+        ...(cfg.isTestBridge ? { global: { fetch: lazyBridgeFetch } } : {}),
       });
     }
     return this.adminClient;
@@ -187,7 +208,7 @@ class PersistentDatabaseEngine {
       const cfg = this.resolveSupabaseConfig();
       this.anonClient = createClient(cfg.supabaseUrl, cfg.anonKey, {
         auth: { persistSession: false, autoRefreshToken: false },
-        ...(cfg.isTestBridge ? { global: { fetch: supabasePgliteFetch } } : {}),
+        ...(cfg.isTestBridge ? { global: { fetch: lazyBridgeFetch } } : {}),
       });
     }
     return this.anonClient;
@@ -199,7 +220,8 @@ class PersistentDatabaseEngine {
 
   public async clearAllForTesting(): Promise<void> {
     if (process.env.SUPABASE_TEST_BRIDGE === 'true') {
-      await resetTestPostgresData();
+      assertTestBridgeAllowed();
+      await (await import('../testing/supabase-pglite-bridge')).resetTestPostgresData();
     }
   }
 
