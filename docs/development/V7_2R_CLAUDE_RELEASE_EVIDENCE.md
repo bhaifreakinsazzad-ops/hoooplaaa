@@ -82,3 +82,10 @@ Test layers: unit; PGlite PostgreSQL 16 with real `anon/authenticated/service_ro
 1. Supabase: create/identify an **empty staging** project; run `npx supabase login` (or add a Supabase connector) and `npx supabase link`; share nothing in chat. Then I apply the 3 migrations in order and run `has_function_privilege`, anon/customer negative PostgREST, Storage and Auth checks.
 2. Vercel: `npx vercel login` + `vercel link` for the HOOOPLAAA project (or add the Vercel connector); set Preview env vars in the Vercel dashboard (`APP_ENV=staging`, public Supabase URL/anon key, server-only service key, SSLCOMMERZ sandbox ids), `SUPABASE_TEST_BRIDGE` unset.
 3. Provide SSLCOMMERZ sandbox store credentials via the Vercel dashboard (not chat).
+
+### Vercel read-only inspection (2026-11-09, after owner login)
+- Vercel CLI 65.12.1 (via `npx`) is authenticated as `dandabuzzz-1922`; scopes: `db-x-codex` (pro), `notrealengine` (hobby).
+- Project **`notrealengine/hoooplaaa`** (`prj_rdu5bJcqgK7kAuKG51AyMIljn6eb`, created 2026-11-09 04:02 local) is the HOOOPLAAA project. It already has several **Production** deployments and one Preview; `https://hoooplaaa.vercel.app` answers HTTP 200. These deployments predate this work and were not created or touched by me.
+- Its Supabase variables (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `POSTGRES_*`, …) are scoped to **Production only** (Supabase integration naming, not the `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` names this app reads). It is unknown whether they point at `aqmyqezuoscpgqwtvblu` or at a live database.
+- **Not done on purpose:** no `vercel link`, no env changes, no deploy, no migration. A Preview built now would either lack Supabase variables (fail closed) or have to reuse the Production database, which is not acceptable without owner approval. A dedicated staging Supabase project is required first.
+- Supabase CLI could not be obtained via `npx` (not installable that way) and no Supabase login exists on this machine.
