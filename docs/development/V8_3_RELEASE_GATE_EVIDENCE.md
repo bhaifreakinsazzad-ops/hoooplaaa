@@ -105,4 +105,9 @@ The commands ran sequentially after the last source change on Windows 11 with No
 | 8 | Production deployment | Production is held at `d9013ef` by the rollback. Promote only after #1 and the staging proof |
 | 9 | Synthetic fixtures | Clean the staging fixtures still in `aqmyqezuoscpgqwtvblu` (see V7.2R evidence) |
 
-PR_PLACEHOLDER
+## 9. Publication status
+
+- Branch `fix/v8-3-release-gate` is pushed. The V8.3 commits are `23c423a` (least privilege + compatibility tests), `f8fba84` (dependencies) and `7c9ea0d` (evidence), plus this status update.
+- Vercel built a Preview for the branch (`dpl_8gzPr6zFfvgdDi7aLzfqQMPyXPny`, commit `7c9ea0d`, state success).
+- **PR not yet opened.** This workstation has no `gh` CLI, the GitHub connector is not authorised, the git credential manager needs an interactive prompt, and the in-app browser is not signed in to GitHub. Open it from: https://github.com/bhaifreakinsazzad-ops/hoooplaaa/compare/main...fix/v8-3-release-gate
+- GitHub Actions runs on `pull_request` (and on pushes to `main`/`feature/**`), so **CI for this commit starts when the PR is opened**. No CI result exists yet for the V8.3 commits.
