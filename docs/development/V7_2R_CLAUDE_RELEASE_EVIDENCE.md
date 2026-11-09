@@ -89,3 +89,39 @@ Test layers: unit; PGlite PostgreSQL 16 with real `anon/authenticated/service_ro
 - Its Supabase variables (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `POSTGRES_*`, …) are scoped to **Production only** (Supabase integration naming, not the `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` names this app reads). It is unknown whether they point at `aqmyqezuoscpgqwtvblu` or at a live database.
 - **Not done on purpose:** no `vercel link`, no env changes, no deploy, no migration. A Preview built now would either lack Supabase variables (fail closed) or have to reuse the Production database, which is not acceptable without owner approval. A dedicated staging Supabase project is required first.
 - Supabase CLI could not be obtained via `npx` (not installable that way) and no Supabase login exists on this machine.
+
+## Supabase staging + Vercel Preview verification (2026-11-09, owner-authorized)
+
+Project `aqmyqezuoscpgqwtvblu` ("Hoooplaaa", ap-southeast-1, PG 17.11) was designated **staging** by the owner. The Supabase CLI labels it `production`; the owner confirmed in chat before any schema change. Treat it as the staging database; do not reuse it for live customers without a separate decision.
+
+### Gate 15 — cloud state inspected (read-only): PASS
+- Before: no public tables/policies/buckets, `auth.users` = 0, no `supabase_migrations` history, only Supabase's default `rls_auto_enable()` helper. Empty, so no conflict with repo migrations.
+### Gate 16 — migrations applied: PASS
+- `supabase db push --remote --yes` applied, in order: `20261108000000`, `20261109000000`, `20261110000000`. History table lists exactly those three.
+- Post-state: 17 public tables, RLS on for all, 29 policies, private bucket `order-assets`, `allow_simulated_payments=false`, calendar policy `PROVISIONAL_UNAPPROVED` (Asia/Dhaka, Fri/Sat).
+- `settle_order_payment_paid`, `convert_quote_to_active_order`, `claim_guest_quote`, `add_business_days`, `is_business_day`: EXECUTE for `service_role` only; `search_path=public, pg_temp`. `get_auth_role/get_auth_org_id` stay callable by clients by design.
+- anon/authenticated hold no INSERT/UPDATE/DELETE on quotes, orders, payments, payment_events, audit_logs, quote_claims, platform_flags; no SELECT on quote_claims.
+### Gate 17 — live negative tests (anon key vs cloud): PASS 18/18 (partial coverage)
+- anon denied (401/42501): read quote_claims, read quotes, insert orders/payments/payment_events/audit_logs/quotes, EXECUTE of the three privileged RPCs with full signatures. service_role control calls reach each RPC (P0001 app errors, not permission errors), so signatures were valid.
+- Storage: anon list of `order-assets` empty, public URL not served, anon upload rejected by RLS.
+- NOT yet covered: authenticated-customer cross-tenant tests (needs real test users), Auth signup/session/logout flow, finance/admin role flows. Email provider only; `disable_signup=false`, `mailer_autoconfirm=false`.
+### Gate 18 — Vercel Preview: PASS (protected)
+- Project `notrealengine/hoooplaaa`; Preview `hoooplaaa-7orwxynl1-notrealengine.vercel.app` from branch `fix/test-bridge-isolation`. Deployment Protection = Vercel Authentication (unauthenticated request -> 302). No `--prod` deploy was made.
+- Existing Production+Preview variables (hidden values) were NOT edited. Branch-scoped Preview overrides were added for `fix/test-bridge-isolation`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (sensitive), `APP_ENV=staging`, `PAYMENT_MODE=sandbox`, `NEXT_PUBLIC_PAYMENT_MODE=sandbox`, `SSLCOMMERZ_IS_SANDBOX=true`. `SUPABASE_TEST_BRIDGE` is unset.
+- Incident (self-inflicted, fixed): while probing CLI flags I briefly overwrote the branch-scoped `NEXT_PUBLIC_SUPABASE_ANON_KEY` with a dummy value; it was re-set to the real key before the deploy.
+- Headers on the Preview: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `/api` `Cache-Control: no-store, private`.
+### Gate 19 — remote browser journey: PARTIAL
+Run with curl through `vercel curl` (not a browser), against the Preview + cloud DB:
+- Guest `POST /api/quote` (same-origin) -> 200, `Set-Cookie: hq_gc_*; Path=/api; Max-Age=1800; Secure; HttpOnly; SameSite=strict`; no claim token in the body.
+- Cross-origin POST -> 403. GET without cookie -> 404. GET with cookie -> 200.
+- DB: 1 quote, 1 `quote_claims` row with 64-hex SHA-256 hash, 0 plaintext tokens in `payload_json`.
+- NOT done: configurator UI, checkout, manual-MFS submit, finance approval, SLA start, order tracking in a real browser; blocked on test accounts (see below). One probe quote (`QUO-MW99HHOB-D28AC8`) remains in staging.
+### Gate 20 — SSLCOMMERZ sandbox: BLOCKED
+- No verified sandbox store credentials. Existing Vercel values are hidden/unknown and were not touched.
+
+### Remaining owner actions
+1. Decide whether test users may be created in this Supabase project (signup is currently open), or provide a seed plan. Needed for customer/finance/admin cloud tests.
+2. Provide SSLCOMMERZ sandbox store id/password directly in the Vercel dashboard (Preview, branch `fix/test-bridge-isolation`).
+3. Weekend/holiday policy and `BUSINESS_CALENDAR_APPROVED`.
+4. Decide whether this project stays "staging" or a separate production project is created before launch.
+5. Consider turning off open signup on staging until the role-seeding plan exists.
