@@ -125,3 +125,30 @@ Run with curl through `vercel curl` (not a browser), against the Preview + cloud
 3. Weekend/holiday policy and `BUSINESS_CALENDAR_APPROVED`.
 4. Decide whether this project stays "staging" or a separate production project is created before launch.
 5. Consider turning off open signup on staging until the role-seeding plan exists.
+
+### Staging test users and authenticated cloud journey (2026-11-09, owner-authorized)
+Five staging users were created through the Supabase Admin API (confirmed email, random passwords generated at creation, stored outside the repo): customer A, customer B (separate orgs), finance, engineer, admin, all `staging-*@example.com`, with `user_profiles` rows. Credentials are NOT in Git, docs or chat. They are fixtures for staging only; rotate or delete them before any real-customer use.
+
+**Direct PostgREST/Auth/Storage as authenticated roles (cloud): 41/41 effective pass** (a first run showed 6 failures caused by patching a non-existent `status` column; re-run with real columns `order_status`/`financial_status`/`payment_status` passed 18/18):
+- all 5 logins succeed; wrong password rejected; token rejected after logout;
+- customer A sees only own profile/org, cannot read B's profile, cannot self-promote to admin, cannot move into B's org;
+- customer, finance and admin: direct INSERT (orders, payments, payment_events, audit_logs, quotes) 403; direct PATCH/DELETE of orders and payments 403; EXECUTE of the 3 privileged RPCs 403; customer cannot read quote_claims;
+- Storage: no client policies on `storage.objects`, customer list is empty, client uploads (own or B's org path) rejected by RLS; uploads must be server-mediated.
+
+**Application journey on the protected Preview against the cloud DB: 28/29 steps pass, the 1 miss is a test-script field name (verified in DB):**
+- login via `/api/auth/session` for customer A/B, finance, engineer; wrong password 401;
+- A creates a quote (no claim token in response); B gets 403 reading it and 403 checking it out; A and staff can read it;
+- A initiates `manual_mfs` checkout; a duplicate checkout returns the same order; B cannot attach a reference (403);
+- finance approval before a reference exists -> 422; after A submits the reference: no auth 401, customer 403, engineer 403, finance 200 (a `verifiedByStaffId` in the body naming customer A was ignored); replay -> 422;
+- DB: `financial_status=paid`, exactly 1 payment `verified` with `verified_by_finance_id` = the finance user, 1 `payment_events` row, 3 `audit_logs` rows, `sla_started_at` NULL while intake was incomplete;
+- intake: B denied (403), password-in-intake rejected (400), unauthenticated 401, A submits -> 200; B cannot read it; engineer and admin can;
+- after intake the order is `ready_for_fulfillment`, `intake_status=completed`, `sla_started_at=2026-11-09 13:06:31Z` (Mon 19:06 Asia/Dhaka, after the 17:00 cutoff) and `sla_deadline_at=2026-11-12 03:00Z` (Thu 09:00 Dhaka). That is consistent with the provisional policy (Fri/Sat weekend, 09:00–17:00); the owner has not approved it.
+
+Method: HTTP via `vercel curl` against the protected Preview, not a real browser. Gate 19 is therefore upgraded to "API journey verified remotely"; the visual configurator/checkout/dashboard UI has not been exercised in a browser against the Preview.
+
+Residual risks / open items
+1. Signup is open on this Supabase project (`disable_signup=false`) and the project is labelled "production" by Supabase. Close signup or move to a dedicated staging project before inviting anyone.
+2. Staging data left behind: 5 test users, 3 orgs, 2 quotes (one guest probe), 1 paid order with intake.
+3. SSLCOMMERZ sandbox still unverified (no sandbox credentials supplied).
+4. Weekend/holiday policy and `BUSINESS_CALENDAR_APPROVED` still need the owner's decision.
+5. Browser UI journey, order file upload through the server, engineer fulfillment/delivery and the customer-acceptance step are not yet exercised remotely.
