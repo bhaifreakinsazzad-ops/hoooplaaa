@@ -165,3 +165,30 @@ Residual risks / open items
 - Preview `hoooplaaa-k7cio0n4w-notrealengine.vercel.app` (protected) against the cloud project, 8/8 checks: short password 400; registration succeeds while sign-up is disabled; role is `customer` even when the body asks for `admin`; session cookie `HttpOnly` + `Secure`; duplicate 409; new customer can sign in; session endpoint reports `customer`; finance verify 403.
 - Cloud DB: the registered user is email-confirmed with `user_profiles.role = customer`. A direct anon `POST /auth/v1/signup` is still rejected (422 `signup_disabled`) and created nothing. `auth.users` = 6 (5 fixtures + 1 registered customer).
 - Still open: real email verification (no email delivery is configured, so staging accepts unverified addresses by owner decision; revisit before launch), and PR #5 CI/review/merge.
+
+## Staging database isolation gate (2026-11-09) — RELEASE-BLOCKING, FAIL
+
+**Isolation report (booleans only; no credentials printed):**
+- Production `SUPABASE_URL` points at project `aqmyqezuoscpgqwtvblu`: **true**. Production `POSTGRES_HOST` points at it: **true**.
+- The Preview branch variables I set (`NEXT_PUBLIC_SUPABASE_URL` / anon / service key) also point at `aqmyqezuoscpgqwtvblu`: **true**.
+- Production and Preview use *different* Supabase projects: **false**. => Production/staging isolation: **FAIL**.
+- Production target has no `APP_ENV`, `REGISTRATION_*` or `SUPABASE_TEST_BRIDGE` variables: true. No Production deployment was created by this work (newest are 15h+ old).
+
+**What happened:** `aqmyqezuoscpgqwtvblu` was designated "staging" by the owner, but Production's Vercel integration reads the same project. All migrations, the signup lockdown and the test data below were therefore applied to a database Production is wired to. On the owner's instruction all further writes to it were stopped.
+
+**Residue left in the shared project (counts taken read-only; NOT deleted, per the owner's no-mutation rule):** auth.users 7 (5 staging fixtures incl. one admin and one finance, plus 2 self-registered), user_profiles 7, organizations 5, quotes 3, orders 1, payments 1, quote_claims 2, audit_logs 22. One end-to-end run was still in flight when the stop order arrived and wrote part of this. Its HTTP failures were caused by my test harness (stderr appended to the response body), so those results are discarded. The three schema migrations, `enable_signup=false`, and a `staging-*@example.com` admin/finance/engineer fixture set remain. **Owner action:** clean these up (or rebuild the project) when ready.
+
+**Containment done (no database writes):**
+- Removed `REGISTRATION_AUTO_CONFIRM_EMAIL` from the `fix/server-side-registration` Preview variables.
+- Removed the two registration Preview deployments built with it (`hoooplaaa-k7cio0n4w`, `hoooplaaa-ed0reud2o`). The older isolation-branch Preview `hoooplaaa-7orwxynl1` remains (Vercel-authentication protected, no auto-confirm variable, old signUp code).
+- Branch-scoped Preview variables still point at the shared project; they must be replaced once a staging project exists.
+
+**Registration hardening (PR #5, commit `96df117`) — LOCAL tests PASS:** tsc clean; ESLint 0 errors; Vitest 98/98 (12 registration tests, 5 SQL tests for the limiter); production build OK; Playwright 4/4.
+- Production never auto-confirms (flag ignored in any spelling of production).
+- Auto-confirm fails closed (503) unless: non-empty `REGISTRATION_EMAIL_ALLOWLIST`, `APP_ENV=staging`, and the Supabase project ref equals `REGISTRATION_STAGING_PROJECT_REF` and differs from `PRODUCTION_SUPABASE_PROJECT_REF`.
+- Shared, serverless-safe rate limit: new migration `20261111000000_registration_rate_limit.sql` (`hit_registration_rate_limit`, service_role-only, per-client and per-email). If the limiter is unavailable the request is refused (503), never allowed. It has NOT been applied anywhere; until it is, deployed registration fails closed.
+- Strict same-origin + JSON content type for registration; login is CSRF-checked; malformed bodies are 400.
+- Only `role=customer` can result; the Admin `createUser` call carries no role claims.
+- Not verifiable until an isolated project exists: public sign-up disabled there, real Auth/PostgreSQL records, the checkout journey, deployment SHA.
+
+**Blocked: creating the isolated staging project.** The owner chose CLI creation. `supabase projects create` was refused by Supabase: the account owner already has 2 active free projects (`Hoooplaaa`, `NotRealEngine`; free-plan limit). Nothing was created. Owner options: upgrade the plan, pause/delete another project, or create the project in the dashboard and give me its ref. I will not pause or delete `NotRealEngine`.
