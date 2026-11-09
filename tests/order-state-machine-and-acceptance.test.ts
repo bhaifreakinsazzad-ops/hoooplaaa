@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { persistentDB } from '../src/domain/persistent-db';
@@ -282,7 +283,24 @@ describe('Order State Machine & Customer Acceptance Protocol', () => {
       order.deliveredAt = new Date().toISOString();
       await persistentDB.saveOrder(order, order.organizationId);
 
-      // Save a deliverable for this order
+      // Store actual deliverable file in private storage
+      const realPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+      await persistentDB.savePrivateFileWithBytes(
+        {
+          id: `deliv_file_${Date.now()}`,
+          orderId: order.id,
+          uploadedByUserId: '00000000-0000-4000-a000-000000000004',
+          fileName: 'handover_pack.pdf',
+          mimeType: 'application/pdf',
+          storagePath: `orders/${order.id}/handover_pack.pdf`,
+          fileSizeBytes: realPdfBytes.length,
+          isPrivate: true,
+          category: 'deliverable',
+          uploadedAt: new Date().toISOString(),
+        },
+        realPdfBytes
+      );
+
       await persistentDB.saveDeliverable({
         orderId: order.id,
         uploadedBy: '00000000-0000-4000-a000-000000000004',
@@ -353,6 +371,23 @@ describe('Order State Machine & Customer Acceptance Protocol', () => {
       order.status = 'delivered';
       order.deliveredAt = new Date().toISOString();
       await persistentDB.saveOrder(order, order.organizationId);
+
+      const metaPdfBytes = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+      await persistentDB.savePrivateFileWithBytes(
+        {
+          id: `deliv_meta_${Date.now()}`,
+          orderId: order.id,
+          uploadedByUserId: '00000000-0000-4000-a000-000000000004',
+          fileName: 'meta_pack.pdf',
+          mimeType: 'application/pdf',
+          storagePath: `orders/${order.id}/meta_pack.pdf`,
+          fileSizeBytes: metaPdfBytes.length,
+          isPrivate: true,
+          category: 'deliverable',
+          uploadedAt: new Date().toISOString(),
+        },
+        metaPdfBytes
+      );
 
       await persistentDB.saveDeliverable({
         orderId: order.id,

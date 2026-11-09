@@ -97,7 +97,6 @@ export async function POST(req: NextRequest) {
 
         const response = NextResponse.json({
           success: true,
-          token,
           user: {
             id: created.id,
             organizationId: created.organizationId,
@@ -144,7 +143,6 @@ export async function POST(req: NextRequest) {
     const { user, token } = authResult;
     const response = NextResponse.json({
       success: true,
-      token,
       user: {
         id: user.id,
         organizationId: user.organizationId,
@@ -194,6 +192,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const crossOrigin = rejectCrossOrigin(req);
+  if (crossOrigin) return crossOrigin;
+
   const auth = await authenticateRequest(req);
   if (!auth.authenticated) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
@@ -251,10 +252,16 @@ export async function DELETE(req: NextRequest) {
   }
 
   // 3. Server-side session revocation: revoke via Supabase Admin API
+  let serverRevoked = false;
   if (token) {
     try {
       const admin = persistentDB.getSupabaseAdminClient();
-      await admin.auth.admin.signOut(token, 'global');
+      const { error: adminSignOutError } = await admin.auth.admin.signOut(token, 'global');
+      if (adminSignOutError) {
+        console.warn('[auth/logout] admin.signOut error:', adminSignOutError);
+      } else {
+        serverRevoked = true;
+      }
     } catch (adminErr) {
       console.warn('[auth/logout] admin.signOut warning:', adminErr);
     }
@@ -274,7 +281,11 @@ export async function DELETE(req: NextRequest) {
     process.env.VERCEL_ENV === 'preview';
 
   const response = NextResponse.json(
-    { success: true, message: 'Signed out successfully.' },
+    {
+      success: true,
+      serverRevoked,
+      message: serverRevoked ? 'Signed out and session revoked successfully.' : 'Signed out (cookies cleared).',
+    },
     { headers: { 'Cache-Control': 'no-store, private' } }
   );
 

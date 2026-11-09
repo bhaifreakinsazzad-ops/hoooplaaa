@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
 import { requireRole } from '@/domain/auth-guard';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
 
 /**
  * POST /api/admin/finance/verify

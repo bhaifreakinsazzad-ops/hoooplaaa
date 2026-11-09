@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { persistentDB } from '@/domain/persistent-db';
 import { OrderService } from '@/domain/order-service';
 import { requireRole } from '@/domain/auth-guard';
+import { rejectCrossOrigin } from '@/domain/guest-claim';
 
 /**
  * GET /api/admin/orders
@@ -57,20 +58,63 @@ export async function POST(req: NextRequest) {
     } else if (action === 'submit_qa') {
       updated = OrderService.submitForQA(order);
     } else if (action === 'deliver') {
-      const qaPassed = body.qaPassed !== false && body.qaChecklistPassed !== false;
-      if (!qaPassed) {
+      // 1. Explicit boolean QA checklist approval required (never accept missing/client default)
+      if (body.qaChecklistPassed !== true) {
         return NextResponse.json(
-          { error: 'Cannot deliver order: QA checklist must be passed.' },
+          { error: 'Cannot deliver order: Explicit QA checklist approval is required (qaChecklistPassed must be true).' },
           { status: 422 }
         );
       }
 
-      // Check if real files exist for this order in private storage or if an explicit path was supplied
+      // 2. Deliverable asset verification in private storage
       const orderFiles = await persistentDB.getFiles(order.id);
-      const storagePath =
-        deliverablePath || (orderFiles.length > 0 ? orderFiles[0].storagePath : `orders/${order.id}/handover-pack.pdf`);
+      let storagePath = '';
 
-      updated = OrderService.deliverOrder(order, { qaChecklistPassed: qaPassed });
+      if (body.deliverableFileId) {
+        const fileRecord = orderFiles.find((f) => f.id === body.deliverableFileId);
+        if (!fileRecord || fileRecord.category === 'client_asset') {
+          return NextResponse.json(
+            { error: 'Deliverable file not found or is a customer intake asset. Customer intake uploads cannot be used as deliverables.' },
+            { status: 422 }
+          );
+        }
+        const exists = await persistentDB.verifyStorageObjectExists('order-assets', fileRecord.storagePath);
+        if (!exists) {
+          return NextResponse.json(
+            { error: 'Deliverable file does not exist in private storage.' },
+            { status: 422 }
+          );
+        }
+        storagePath = fileRecord.storagePath;
+      } else if (body.deliverablePath) {
+        const exists = await persistentDB.verifyStorageObjectExists('order-assets', body.deliverablePath);
+        if (!exists) {
+          return NextResponse.json(
+            { error: 'Deliverable file does not exist in private storage (fabricated path rejected).' },
+            { status: 422 }
+          );
+        }
+        storagePath = body.deliverablePath;
+      } else {
+        // Find existing staff deliverable file in orderFiles
+        const staffDeliverable = orderFiles.find((f) => f.category === 'deliverable');
+        if (!staffDeliverable) {
+          return NextResponse.json(
+            { error: 'Cannot deliver order: A genuine deliverable file must exist in private storage before delivery. Customer intake uploads do not count.' },
+            { status: 422 }
+          );
+        }
+        const exists = await persistentDB.verifyStorageObjectExists('order-assets', staffDeliverable.storagePath);
+        if (!exists) {
+          return NextResponse.json(
+            { error: 'Deliverable file does not exist in private storage.' },
+            { status: 422 }
+          );
+        }
+        storagePath = staffDeliverable.storagePath;
+      }
+
+      updated = OrderService.deliverOrder(order, { qaChecklistPassed: true });
       await persistentDB.saveDeliverable({
         orderId: order.id,
         uploadedBy: auth.user.id,
@@ -89,7 +133,11 @@ export async function POST(req: NextRequest) {
         revisionNotes: revisionNotes || 'Revision requested on setup configuration.',
       });
     } else if (action === 'accept') {
-      updated = OrderService.acceptHandover(order, auth.user.id);
+      // Disallow staff acceptance: only customer may accept delivery
+      return NextResponse.json(
+        { error: 'Staff cannot accept delivery handover. Only the authorized customer can accept handover through the customer acceptance endpoint.' },
+        { status: 403 }
+      );
     } else {
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }

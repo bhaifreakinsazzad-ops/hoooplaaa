@@ -8,12 +8,14 @@ import { rejectCrossOrigin } from '@/domain/guest-claim';
  * POST /api/orders/[id]/accept
  * Customer endpoint to review deliverables and officially accept handover.
  * Enforces:
- * - Origin / CSRF protection for state-changing request
+ * - Origin / CSRF protection for state-changing request (403)
  * - Customer authentication (401)
  * - Order tenant ownership / access validation (403)
+ * - Customer-only acceptance (staff cannot accept for customer) (403)
  * - Order must be paid (422)
  * - Order must be in 'delivered' state (422)
- * - Real deliverables or handover files must exist (422)
+ * - Real, QA-approved deliverable must exist in private storage (422)
+ * - Customer intake uploads NEVER count as completed deliverables
  * - Idempotent if already accepted (200)
  * - Records ORDER_HANDOVER_ACCEPTED in audit_logs
  */
@@ -39,6 +41,14 @@ export async function POST(
     const access = await requireOrderAccess(req, order);
     if (!access.authorized) {
       return NextResponse.json({ error: access.error }, { status: access.status });
+    }
+
+    // Handover acceptance is strictly reserved for the customer (staff cannot accept for customer)
+    if (access.user.role !== 'customer') {
+      return NextResponse.json(
+        { error: 'Staff cannot accept delivery handover. Only the authorized customer can accept handover through the customer acceptance endpoint.' },
+        { status: 403 }
+      );
     }
 
     // Idempotency: if already accepted, return current order state cleanly
@@ -67,12 +77,29 @@ export async function POST(
       );
     }
 
-    // Verify deliverables exist in record or file storage
+    // Verify genuine, QA-approved deliverables exist in private storage (customer intake files NEVER count)
     const deliverables = await persistentDB.getDeliverables(order.id);
-    const orderFiles = await persistentDB.getFiles(order.id);
-    if (deliverables.length === 0 && orderFiles.length === 0) {
+    if (deliverables.length === 0) {
       return NextResponse.json(
-        { error: 'Cannot accept handover: No verified deliverable exists for this order.' },
+        { error: 'Cannot accept handover: No verified deliverable exists for this order. Customer intake files do not count.' },
+        { status: 422 }
+      );
+    }
+
+    let verifiedDeliverableFound = false;
+    for (const d of deliverables) {
+      if (d.qaChecklistPassed === true && d.storageBucketPath) {
+        const exists = await persistentDB.verifyStorageObjectExists('order-assets', d.storageBucketPath);
+        if (exists) {
+          verifiedDeliverableFound = true;
+          break;
+        }
+      }
+    }
+
+    if (!verifiedDeliverableFound) {
+      return NextResponse.json(
+        { error: 'Cannot accept handover: Deliverable records must have passed QA and confirmed storage assets before customer acceptance.' },
         { status: 422 }
       );
     }
@@ -95,12 +122,13 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      message: 'Order handover accepted successfully.',
+      message: 'Handover accepted successfully.',
       order: updated,
     });
   } catch (error: any) {
-    const msg = error?.message || 'Error accepting order handover.';
-    const status = msg.startsWith('Illegal state transition') ? 422 : 500;
-    return NextResponse.json({ error: msg }, { status });
+    return NextResponse.json(
+      { error: error?.message || 'Error processing handover acceptance.' },
+      { status: 500 }
+    );
   }
 }

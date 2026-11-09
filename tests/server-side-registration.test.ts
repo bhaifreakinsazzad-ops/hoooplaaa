@@ -76,7 +76,7 @@ describe('server-side customer registration (LOCAL ONLY)', () => {
     });
     const json = await res.json();
     expect(res.status).toBe(200);
-    expect(json.token).toBeTruthy();
+    expect(json.token).toBeUndefined(); // Zero browser token exposure
     expect(json.user.role).toBe('customer');
     expect(json.user.organizationId).not.toBe('10000000-0000-4000-a000-000000000099');
     expect(json.user.id).not.toBe('00000000-0000-4000-a000-000000000005');
