@@ -152,3 +152,9 @@ Residual risks / open items
 3. SSLCOMMERZ sandbox still unverified (no sandbox credentials supplied).
 4. Weekend/holiday policy and `BUSINESS_CALENDAR_APPROVED` still need the owner's decision.
 5. Browser UI journey, order file upload through the server, engineer fulfillment/delivery and the customer-acceptance step are not yet exercised remotely.
+
+### Open signup disabled on the staging Supabase project (2026-11-09, owner-approved)
+- Changed only `auth.enable_signup` (true -> false) via `supabase config push`; the diff before push showed exactly that one change (config was pulled into a scratch workdir, not the repo; nothing was added to `supabase/`).
+- Verified: `POST /auth/v1/signup` with the anon key -> 422 `signup_disabled`; `/auth/v1/settings` reports `disable_signup=true`; `auth.users` still holds only the 5 staging fixtures (no probe user created).
+- **Functional consequence:** `POST /api/auth/session` with `action: "register"` calls `supabase.auth.signUp` with the anon key (`registerCustomerWithSupabaseAuth`, src/domain/auth-guard.ts), so self-service customer registration now fails on staging. Before launch, either re-enable signup deliberately (with email confirmation, which is already on) or move registration to a server-side admin path. This is an open product decision, not yet changed in code.
+- Existing users, logins, and the service-role/admin APIs are unaffected.
