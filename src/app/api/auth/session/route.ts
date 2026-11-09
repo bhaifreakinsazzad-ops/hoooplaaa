@@ -23,12 +23,25 @@ export async function POST(req: NextRequest) {
     // Self-service customer registration via Supabase Auth (always assigns 'customer' role; ignores any role in body)
     if (action === 'register') {
       try {
-        const { user: created, token } = await registerCustomerWithSupabaseAuth({
+        const { user: created, token, requiresEmailConfirmation } = await registerCustomerWithSupabaseAuth({
           email,
           password,
           fullName: fullName || email,
           businessName: businessName || fullName || email,
         });
+
+        if (requiresEmailConfirmation || !token) {
+          // Account exists but may not sign in until the address is confirmed: no token, no cookie.
+          return NextResponse.json(
+            {
+              success: true,
+              requiresEmailConfirmation: true,
+              message: 'Account created. Confirm your email address before signing in.',
+              user: { id: created.id, email: created.email, role: created.role },
+            },
+            { status: 202, headers: { 'Cache-Control': 'no-store, private' } }
+          );
+        }
 
         const response = NextResponse.json({
           success: true,

@@ -55,57 +55,107 @@ export async function authenticateCredentials(
 }
 
 /**
- * Registers a new customer account via Supabase Auth (`supabase.auth.signUp`).
- * Always assigns `role = 'customer'` in `public.user_profiles` regardless of request payload.
+ * Validation for self-service registration. Throws a user-facing Error on bad input.
+ */
+export function validateRegistrationInput(email: string, password: string): string {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (normalizedEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error('Please provide a valid email address.');
+  }
+  const pw = String(password || '');
+  if (pw.length < 10 || pw.length > 128) {
+    throw new Error('Password must be between 10 and 128 characters.');
+  }
+  return normalizedEmail;
+}
+
+/**
+ * Whether newly registered customers are marked email-confirmed immediately.
+ * Deployed environments (staging/production/preview) default to NOT auto-confirming; set
+ * REGISTRATION_AUTO_CONFIRM_EMAIL=true only where no email delivery exists and the owner accepts unverified
+ * addresses. Local/test runs auto-confirm so the harness can sign in.
+ */
+export function shouldAutoConfirmRegistrationEmail(): boolean {
+  if (process.env.REGISTRATION_AUTO_CONFIRM_EMAIL === 'true') return true;
+  if (process.env.REGISTRATION_AUTO_CONFIRM_EMAIL === 'false') return false;
+  return !(
+    process.env.NODE_ENV === 'production' ||
+    process.env.APP_ENV === 'staging' ||
+    process.env.APP_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'preview' ||
+    process.env.VERCEL_ENV === 'production'
+  );
+}
+
+/**
+ * Registers a new customer SERVER-SIDE through the Supabase Auth Admin API (service role), so the project can keep
+ * public sign-up (enable_signup) disabled. The role is always forced to 'customer' in public.user_profiles
+ * regardless of request payload. If profile provisioning fails, the just-created auth user is removed so no orphan
+ * login remains. When email confirmation is required the account exists but no session/token is issued.
  */
 export async function registerCustomerWithSupabaseAuth(params: {
   email: string;
   password: string;
   fullName?: string;
   businessName?: string;
-}): Promise<{ user: DbUserProfile; token: string }> {
-  const normalizedEmail = params.email.trim().toLowerCase();
+}): Promise<{ user: DbUserProfile; token: string; requiresEmailConfirmation: boolean }> {
+  const normalizedEmail = validateRegistrationInput(params.email, params.password);
   const existing = await persistentDB.getUserByEmail(normalizedEmail);
   if (existing) {
     throw new Error('Conflict: An account with this email already exists.');
   }
 
-  const supabaseAuth = persistentDB.getSupabaseAuthClient();
-  const { data, error } = await supabaseAuth.auth.signUp({
+  const fullName = (params.fullName || normalizedEmail).slice(0, 200);
+  const businessName = (params.businessName || params.fullName || normalizedEmail).slice(0, 200);
+  const autoConfirm = shouldAutoConfirmRegistrationEmail();
+
+  const admin = persistentDB.getSupabaseAdminClient();
+  const { data, error } = await admin.auth.admin.createUser({
     email: normalizedEmail,
     password: params.password,
-    options: {
-      data: {
-        full_name: params.fullName || normalizedEmail,
-        business_name: params.businessName || params.fullName || normalizedEmail,
-      },
-    },
+    email_confirm: autoConfirm,
+    user_metadata: { full_name: fullName, business_name: businessName },
   });
 
   if (error || !data?.user) {
-    throw new Error(error?.message || 'Supabase Auth sign-up failed.');
+    const msg = error?.message || 'Account creation failed.';
+    if (/already|registered|exists/i.test(msg)) {
+      throw new Error('Conflict: An account with this email already exists.');
+    }
+    throw new Error(msg);
   }
 
-  const createdProfile = await persistentDB.createOrGetCustomerUser({
-    id: data.user.id,
-    email: normalizedEmail,
-    fullName: params.fullName || normalizedEmail,
-    businessName: params.businessName || params.fullName || normalizedEmail,
-  });
-
-  let accessToken = data.session?.access_token || '';
-  if (!accessToken) {
-    const signInRes = await supabaseAuth.auth.signInWithPassword({
+  let createdProfile: DbUserProfile;
+  try {
+    createdProfile = await persistentDB.createOrGetCustomerUser({
+      id: data.user.id,
       email: normalizedEmail,
-      password: params.password,
+      fullName,
+      businessName,
     });
-    accessToken = signInRes.data?.session?.access_token || '';
+  } catch (provisionErr) {
+    try {
+      await admin.auth.admin.deleteUser(data.user.id);
+    } catch {
+      /* best effort: surface the original provisioning error below */
+    }
+    throw provisionErr;
   }
 
-  return {
-    user: createdProfile,
-    token: accessToken,
-  };
+  if (!autoConfirm) {
+    return { user: createdProfile, token: '', requiresEmailConfirmation: true };
+  }
+
+  const signInRes = await persistentDB.getSupabaseAuthClient().auth.signInWithPassword({
+    email: normalizedEmail,
+    password: params.password,
+  });
+  const accessToken = signInRes.data?.session?.access_token || '';
+  if (!accessToken) {
+    throw new Error('Account created but automatic sign-in failed. Please sign in manually.');
+  }
+
+  return { user: createdProfile, token: accessToken, requiresEmailConfirmation: false };
 }
 
 export function extractBearerOrCookieToken(req: NextRequest): string | null {
