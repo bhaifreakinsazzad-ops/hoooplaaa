@@ -29,6 +29,17 @@ export const FORBIDDEN_EXTENSIONS = [
 
 export const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
+/**
+ * Largest acceptable request body before it is buffered: multipart carries raw bytes (+ framing), while the
+ * JSON path carries base64 (4/3 of the bytes) plus field overhead.
+ */
+export function maxUploadRequestBytes(contentType: string): number {
+  const overhead = 1024 * 1024;
+  return contentType.includes('multipart/form-data')
+    ? MAX_FILE_SIZE_BYTES + overhead
+    : Math.ceil((MAX_FILE_SIZE_BYTES * 4) / 3) + overhead;
+}
+
 export interface FileValidationResult {
   isValid: boolean;
   error?: string;
@@ -67,7 +78,10 @@ export function validateFileName(fileName: string): string | null {
   if (fileName.length > 200) return 'File name is too long (max 200 characters).';
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(fileName)) return 'File name contains control characters.';
-  if (/[\\/]/.test(fileName) || fileName.includes('..')) return 'File name must not contain path separators or "..".';
+  // Separators are never allowed, so ".." can only be a traversal when it is the whole name.
+  if (/[\\/]/.test(fileName) || fileName === '.' || fileName === '..') {
+    return 'File name must not contain path separators or be "." / "..".';
+  }
   return null;
 }
 
@@ -101,12 +115,16 @@ export function sha256Hex(bytes: Buffer | Uint8Array): string {
 const SVG_FORBIDDEN_PATTERNS: Array<[RegExp, string]> = [
   [/<script[\s>/]/i, 'script elements'],
   [/<foreignobject[\s>/]/i, 'foreignObject elements'],
-  [/<(iframe|embed|object|audio|video|link|meta|base|form|input|button|style)[\s>/]/i, 'embedded or active elements'],
+  // <style> is allowed (design tools emit it for fills); its contents are covered by the CSS rules below.
+  [/<(iframe|embed|object|audio|video|link|meta|base|form|input|button)[\s>/]/i, 'embedded or active elements'],
   [/<!doctype/i, 'DOCTYPE declarations'],
   [/<!entity/i, 'XML entity declarations'],
   [/<\?xml-stylesheet/i, 'external stylesheets'],
   [/\son[a-z]+\s*=/i, 'event-handler attributes'],
-  [/(javascript|vbscript|data)\s*:/i, 'script or data URLs'],
+  // Script/data URL schemes only where a URL can appear (attribute value, url(), CSS value) - so ordinary text
+  // such as "metadata: ..." is not mistaken for a data: URL.
+  [/(?:=\s*["']?|url\s*\(\s*["']?|:)\s*(?:javascript|vbscript|data)\s*:/i, 'script or data URLs'],
+  [/expression\s*\(|behavior\s*:|-moz-binding/i, 'scriptable CSS'],
   [/(?:xlink:)?href\s*=\s*["']?\s*(?!#)[^"'\s>]/i, 'external references'],
   [/@import|url\s*\(\s*["']?\s*(?!#)/i, 'external CSS references'],
   [/<(set|animate)[^>]*attributename\s*=\s*["']?\s*(href|xlink:href|on)/i, 'animated link/handler attributes'],

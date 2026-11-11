@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useId } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useT } from '@/lib/i18n';
 import { useApp } from '../providers/AppProviders';
 import { CANONICAL_SERVICES } from '@/domain/catalog';
 import { BusinessProfile, QuoteSnapshot } from '@/domain/types';
@@ -26,6 +27,7 @@ export function ConfiguratorWizard() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { locale } = useApp();
+  const { t } = useT();
 
   const [step, setStep] = useState<number>(1);
   const [loadingQuote, setLoadingQuote] = useState<boolean>(false);
@@ -191,18 +193,21 @@ export function ConfiguratorWizard() {
         <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
           {/* STEP 1: Business Profile & Model */}
           {step === 1 && (
-            <div className="space-y-6">
-              <div>
-                <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  Step 1 of 4
-                </span>
-                <h2 className="text-2xl font-bold text-slate-900 mt-1">
-                  Tell us about your business
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Required to deterministically evaluate Google and Meta platform eligibility.
-                </p>
-              </div>
+          <div className="space-y-6">
+            <div>
+              <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
+                {t('step1')}
+              </span>
+              <h2 className="text-2xl font-bold text-slate-900 mt-1">
+                {locale === 'en' ? 'Tell us about your business' : 'আপনার ব্যবসা সম্পর্কে জানান'}
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                {locale === 'en'
+                  ? 'Required to deterministically evaluate Google and Meta platform eligibility.'
+                  : 'গুগল ও মেটা প্ল্যাটফর্মের অধিকার নির্ধারণের জন্য প্রয়োজন।'}
+              </p>
+            </div>
+
 
               <div className="space-y-4">
                 <div>
@@ -327,7 +332,7 @@ export function ConfiguratorWizard() {
                   disabled={!businessName.trim()}
                   className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition"
                 >
-                  <span>Continue to Platform Selection</span>
+                  <span>{t('continuePlatform')}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
@@ -339,7 +344,7 @@ export function ConfiguratorWizard() {
             <div className="space-y-6">
               <div>
                 <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  Step 2 of 4
+                  {t('step2')}
                 </span>
                 <h2 className="text-2xl font-bold text-slate-900 mt-1">
                   Select your digital platforms
@@ -540,7 +545,7 @@ export function ConfiguratorWizard() {
             <div className="space-y-6">
               <div>
                 <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  Step 3 of 4
+                  {t('step3')}
                 </span>
                 <h2 className="text-2xl font-bold text-slate-900 mt-1">
                   Add-on growth & tracking tools

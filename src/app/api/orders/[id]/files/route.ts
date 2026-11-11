@@ -3,14 +3,12 @@ import { persistentDB, StoredOrderFile } from '@/domain/persistent-db';
 import {
   IntakeAndFileManager,
   MAX_FILE_SIZE_BYTES,
+  maxUploadRequestBytes,
   isFileCategory,
   sha256Hex,
 } from '@/domain/intake-and-files';
 import { requireOrderAccess } from '@/domain/auth-guard';
 import { rejectCrossOrigin } from '@/domain/guest-claim';
-
-// Multipart framing overhead allowance on top of the file size limit.
-const MAX_REQUEST_BYTES = MAX_FILE_SIZE_BYTES + 1024 * 1024;
 
 /** Public shape of a file: no internal storage paths or row ids. */
 function toPublicFile(f: StoredOrderFile) {
@@ -78,7 +76,7 @@ export async function POST(
     }
 
     const declaredLength = Number(req.headers.get('content-length') || '0');
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+    if (Number.isFinite(declaredLength) && declaredLength > maxUploadRequestBytes(req.headers.get('content-type') || '')) {
       return NextResponse.json({ error: 'File size exceeds the 25MB limit.' }, { status: 413 });
     }
 

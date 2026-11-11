@@ -107,10 +107,23 @@ export async function POST(
       );
     }
 
-    // Version-checked: a concurrent acceptance resolves idempotently instead of overwriting.
-    const updated = await persistentDB.transitionOrder(order.id, (current) =>
-      current.status === 'accepted' ? current : OrderService.acceptHandover(current, access.user.id)
-    );
+    // Version-checked: a concurrent acceptance resolves idempotently (no second write, no second audit row).
+    let acceptedNow = false;
+    const updated = await persistentDB.transitionOrder(order.id, (current) => {
+      acceptedNow = false; // re-evaluated on every retry attempt
+      if (current.status === 'accepted') return null;
+      acceptedNow = true;
+      return OrderService.acceptHandover(current, access.user.id);
+    });
+
+    if (!acceptedNow) {
+      return NextResponse.json({
+        success: true,
+        alreadyAccepted: true,
+        message: 'Order handover has already been accepted.',
+        order: updated,
+      });
+    }
 
     await persistentDB.recordAuditLog({
       actorId: access.user.id,
