@@ -221,11 +221,19 @@ export class OrderService {
    * Triggers the official SLA start timer ONLY if payment has already been verified!
    */
   public static completeIntake(order: Order): Order {
+    // Idempotent: intake details may be edited later, but completion, workflow status and the SLA clock are
+    // one-way facts set exactly once (the database guard refuses any rewrite).
+    if (order.intakeStatus === 'completed') {
+      return order;
+    }
+
     const updated = { ...order };
     updated.intakeStatus = 'completed';
     updated.updatedAt = new Date().toISOString();
 
-    if (updated.financialStatus === 'paid') {
+    // Only the "waiting for requirements" step advances; never move an order backwards.
+    const advancesWorkflow = updated.status === 'awaiting_requirements';
+    if (updated.financialStatus === 'paid' && advancesWorkflow && !updated.slaStartedAt) {
       updated.status = 'ready_for_fulfillment';
       // Official SLA clock starts now with service-specific business-day delivery targets
       const now = new Date();

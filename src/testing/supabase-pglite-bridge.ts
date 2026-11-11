@@ -455,6 +455,19 @@ export async function supabasePgliteFetch(
   if (url.pathname.startsWith('/storage/v1/object/')) {
     const restPath = url.pathname.replace('/storage/v1/object/', '');
 
+    // Object metadata (storage-js `info()`): size without transferring the bytes.
+    if (method === 'GET' && restPath.startsWith('info/')) {
+      const infoPath = restPath.replace(/^info\//, '').replace(/^(authenticated|public)\//, '');
+      const stored = globalState.storageObjects.get(infoPath);
+      if (!stored) {
+        return Response.json({ error: 'Not Found', message: 'Object not found' }, { status: 404 });
+      }
+      return Response.json(
+        { name: infoPath.split('/').pop(), size: stored.bytes.byteLength, content_type: stored.contentType },
+        { status: 200 }
+      );
+    }
+
     if (method === 'POST' || method === 'PUT') {
       let rawBuffer: Buffer;
       if (Buffer.isBuffer(init?.body)) {

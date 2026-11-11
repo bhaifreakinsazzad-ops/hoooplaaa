@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { AppProviders } from '@/components/providers/AppProviders';
-import { Header } from '@/components/layout/Header';
-import { Footer } from '@/components/layout/Footer';
+import Header from '@/components/Header';
+import Footer from '@/components/Footer';
+
 
 export const metadata: Metadata = {
   title: 'HOOOPLAAA INCORPORATED — Digital Infrastructure & Growth Engine',

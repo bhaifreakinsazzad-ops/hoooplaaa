@@ -39,8 +39,9 @@ export default function QaDeliveryPanel({ orderId, onChanged }: { orderId: strin
     const data = await res.json();
     setFiles(data.files || []);
     setReviews(data.qaReviews || []);
-    if (!fileId && data.files?.[0]) setFileId(data.files[0].id);
-  }, [orderId, fileId]);
+    // Default the selection without depending on it, so changing the selection never triggers a refetch.
+    if (data.files?.[0]) setFileId((current) => current || data.files[0].id);
+  }, [orderId]);
 
   useEffect(() => {
     load();

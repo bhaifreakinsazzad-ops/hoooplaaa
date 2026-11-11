@@ -231,6 +231,9 @@ function rowToQaReview(r: any, orderId: string, fileId: string): DbQaReviewRecor
   };
 }
 
+/** Order code (ord_...), order number (HOO-/HI-...) or uuid: identifier characters only. */
+const SAFE_ORDER_REF = /^[A-Za-z0-9_-]{1,100}$/;
+
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isValidUuid(input: string): boolean {
@@ -773,7 +776,7 @@ class PersistentDatabaseEngine {
    */
   public async transitionOrder(
     orderId: string,
-    mutate: (current: Order & { organizationId?: string }) => Order | Promise<Order>,
+    mutate: (current: Order & { organizationId?: string }) => Order | null | Promise<Order | null>,
     maxAttempts = 3
   ): Promise<Order> {
     let lastError: unknown;
@@ -781,6 +784,10 @@ class PersistentDatabaseEngine {
       const current = await this.getOrder(orderId);
       if (!current) throw new Error(`Order ${orderId} not found.`);
       const next = await mutate(current);
+      // `null` or the unchanged object means "nothing to write": no version bump, no audit row.
+      if (next === null || next === current) {
+        return current;
+      }
       try {
         return await this.saveOrder({ ...next, rowVersion: current.rowVersion }, current.organizationId);
       } catch (err) {
@@ -797,6 +804,11 @@ class PersistentDatabaseEngine {
   public async getOrder(
     orderId: string
   ): Promise<(Order & { organizationId?: string }) | undefined> {
+    // The id is interpolated into a PostgREST `or=` filter: accept only plain identifier characters so a
+    // crafted value (commas, dots, parentheses) cannot add filter terms and match a different order.
+    if (typeof orderId !== 'string' || !SAFE_ORDER_REF.test(orderId)) {
+      return undefined;
+    }
     const supabase = this.getSupabaseAdminClient();
     const orderUuid = toDeterministicUuid(`order:${orderId}`);
 
@@ -1436,6 +1448,12 @@ class PersistentDatabaseEngine {
     const supabase = this.getSupabaseAdminClient();
     let bytes: Buffer;
     try {
+      // Size from object metadata BEFORE downloading, so an oversized/replaced object is never buffered.
+      const { data: info } = await supabase.storage.from('order-assets').info(file.storagePath);
+      const reportedSize = Number((info as { size?: unknown } | null)?.size);
+      if (Number.isFinite(reportedSize) && reportedSize > MAX_FILE_SIZE_BYTES) {
+        return { status: 'oversized', file };
+      }
       const { data: blobData, error: downloadError } = await supabase.storage
         .from('order-assets')
         .download(file.storagePath);
