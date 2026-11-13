@@ -1,12 +1,8 @@
-
 'use client';
+
 import { Metadata } from 'next';
 import { CANONICAL_SERVICES } from '@/domain/catalog';
 import ServiceCard from '@/components/ServiceCard';
-import { useApp } from '@/components/providers/AppProviders';
-import { CANONICAL_SERVICES } from '@/domain/catalog';
-import ServiceCard from '@/components/ServiceCard';
-
 import { useApp } from '@/components/providers/AppProviders';
 
 export const metadata: Metadata = {
