@@ -673,6 +673,16 @@ export function ConfiguratorWizard() {
                 </div>
               </div>
 
+              {quoteError && (
+                <div
+                  role="alert"
+                  className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-start gap-2"
+                >
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <span>{quoteError}</span>
+                </div>
+              )}
+
               <div className="pt-4 border-t border-slate-100 flex justify-between">
                 <button
                   type="button"

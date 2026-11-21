@@ -1,3 +1,5 @@
+'use client';
+
 import { useApp } from '@/components/providers/AppProviders';
 
 type Dict = Record<string, { en: string; bn: string }>;
