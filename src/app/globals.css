@@ -3,58 +3,53 @@
 @tailwind utilities;
 
 :root {
-  --color-bg: #F7F8FA;
+  --brand-forest: #021B16;
+  --brand-teal: #003D3A;
+  --brand-emerald: #0A7F5A;
+  --brand-gold: #D4AF37;
+  --brand-softgold: #E6BE73;
+  --brand-platinum: #E8E8E8;
+  --brand-ivory: #F7F3E8;
+  --brand-ink: #163A31;
+  --brand-muted: #48635A;
+  --brand-hairline: #DDD5C3;
+
+  --color-bg: #F7F3E8;
   --color-surface: #FFFFFF;
-  --color-border: #E2E8F0;
-  --color-ink-primary: #102033;
-  --color-ink-secondary: #4A5B70;
-  --color-accent-gold: #D9B45E;
-  --color-accent-pale: #F4D58D;
-  --color-navy-deep: #071525;
+  --color-border: #DDD5C3;
+  --color-ink-primary: #163A31;
+  --color-ink-secondary: #48635A;
+  --color-accent-gold: #D4AF37;
+  --color-accent-pale: #E6BE73;
+  --color-navy-deep: #021B16;
 }
 
-/* Concept A: Executive Prestige (Dark Midnight Navy Dominant) */
-[data-theme="concept-a"] {
-  --color-bg: #071525;
-  --color-surface: #10283E;
-  --color-border: rgba(217, 180, 94, 0.25);
-  --color-ink-primary: #FFFCF5;
-  --color-ink-secondary: #CBD5E1;
-  --color-accent-gold: #D9B45E;
-  --color-accent-pale: #F4D58D;
-  --color-navy-deep: #0B1A2A;
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--brand-ivory);
+    color: var(--brand-ink);
+  }
+
+  body {
+    background-color: var(--brand-ivory);
+    color: var(--brand-ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
 }
 
-/* Concept B: Nordic Clean Ivory & Precision (Light & Crisp) */
-[data-theme="concept-b"] {
-  --color-bg: #FFFCF5;
-  --color-surface: #FFFFFF;
-  --color-border: #E5E7EB;
-  --color-ink-primary: #0F172A;
-  --color-ink-secondary: #64748B;
-  --color-accent-gold: #B8923E;
-  --color-accent-pale: #FDF8EC;
-  --color-navy-deep: #071525;
+.tabular-price {
+  font-variant-numeric: tabular-nums;
 }
 
-/* Concept C: Modern High-Conversion Direct Commerce (Strategic Dual-Tone) */
-[data-theme="concept-c"] {
-  --color-bg: #F8FAFC;
-  --color-surface: #FFFFFF;
-  --color-border: #CBD5E1;
-  --color-ink-primary: #0F172A;
-  --color-ink-secondary: #475569;
-  --color-accent-gold: #D9B45E;
-  --color-accent-pale: #F4D58D;
-  --color-navy-deep: #071525;
-}
-
-body {
-  background-color: var(--color-bg);
-  color: var(--color-ink-primary);
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+.gold-hairline {
+  background: linear-gradient(90deg, rgba(212, 175, 55, 0) 0%, rgba(212, 175, 55, 0.55) 50%, rgba(212, 175, 55, 0) 100%);
 }
 
 @media (prefers-reduced-motion: reduce) {

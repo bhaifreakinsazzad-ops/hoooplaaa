@@ -106,6 +106,7 @@ export function addBusinessDays(
  */
 export function getServiceTurnaroundBusinessDays(items: { sku: string }[]): number {
   const SKU_TURNAROUND: Record<string, number> = {
+    // Legacy SKUs (preserved verbatim for existing tests & order history)
     'HI-BUNDLE-3': 4,
     'HI-SET-META': 2,
     'HI-SET-GOOGLE': 2,
@@ -113,6 +114,47 @@ export function getServiceTurnaroundBusinessDays(items: { sku: string }[]): numb
     'HI-ADD-WA': 2,
     'HI-ADD-PIXEL': 2,
     'HI-ADD-CREATIVE': 2,
+    // v3.0 Signature Bundles
+    PK01: 4,
+    PK02: 5,
+    PK03: 2,
+    // v3.0 Department 01: Business Setup & Digital Presence
+    B01: 2,
+    B02: 2,
+    B03: 1,
+    B04: 2,
+    // v3.0 Department 02 & 03: Advertising & VA+
+    A01: 3,
+    'A01-MODE-1': 3,
+    'A01-MODE-2': 2,
+    V01: 2,
+    'V01-MODE-3': 2,
+    'V01-MODE-4': 2,
+    'V01-MODE-5': 2,
+    'V01-MODE-6': 2,
+    // v3.0 Department 04: Leads, CRM & Conversion
+    L01: 5,
+    L02: 3,
+    L03: 4,
+    L04: 5,
+    // v3.0 Department 05: Audience Intelligence & Growth
+    I01: 3,
+    I02: 3,
+    I03: 3,
+    I04: 3,
+    I05: 2,
+    I06: 4,
+    I07: 3,
+    I08: 4,
+    I09: 3,
+    I10: 4,
+    I11: 3,
+    // v3.0 Department 06: Marketing Tracking & Analytics
+    T01: 2,
+    T02: 2,
+    T03: 3,
+    T04: 3,
+    T05: 2,
   };
 
   if (!items || items.length === 0) return 2;

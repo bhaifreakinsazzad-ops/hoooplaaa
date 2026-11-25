@@ -15,12 +15,15 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.15",
     "@supabase/supabase-js": "^2.119.0",
+    "@types/three": "^0.187.0",
+    "animejs": "^4.5.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
     "next": "^15.1.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "tailwind-merge": "^3.0.1"
+    "tailwind-merge": "^3.0.1",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

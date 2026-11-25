@@ -1,74 +1,141 @@
 'use client';
 
+import React from 'react';
 import Link from 'next/link';
 import { Service } from '@/domain/types';
+import { formatBdt, getActivePricingWindow, getEffectivePriceMinor } from '@/domain/catalog';
 import { useApp } from '@/components/providers/AppProviders';
-import { ArrowRight, Clock, Layers } from 'lucide-react';
+import { ArrowRight, Check } from 'lucide-react';
 
 interface ServiceCardProps {
-  item: Service;
+  service: Service;
+  compact?: boolean;
 }
 
-export default function ServiceCard({ item }: ServiceCardProps) {
+export function ServiceCard({ service, compact = false }: ServiceCardProps) {
   const { locale } = useApp();
+  const pricingWindow = getActivePricingWindow();
+  const effectiveMinor = getEffectivePriceMinor(service);
+  const regularMinor = service.regularPriceMinor ?? service.basePriceMinor;
+  const showLaunchContrast =
+    pricingWindow.isLaunchActive &&
+    typeof service.launchPriceMinor === 'number' &&
+    typeof service.regularPriceMinor === 'number' &&
+    service.regularPriceMinor > service.launchPriceMinor;
 
-  const name = locale === 'en' ? item.name : item.nameBn;
-  const desc = locale === 'en' ? item.shortDescription : item.shortDescriptionBn;
-  const price = `৳${(item.basePriceMinor / 100).toLocaleString('en-US', {
-    maximumFractionDigits: 0,
-  })}`;
+  const billingLabel =
+    service.billingPeriod === 'monthly'
+      ? locale === 'bn'
+        ? 'মাসিক (১ম মাস অফার)'
+        : 'Monthly · 1st mo offer'
+      : service.billingPeriod === 'variable'
+      ? locale === 'bn'
+        ? 'স্কোপভিত্তিক'
+        : 'Scoped modes'
+      : locale === 'bn'
+      ? 'এককালীন'
+      : 'One-time';
 
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-hoooplaaa-gold-500/60 transition flex flex-col justify-between gap-5">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-bold px-2.5 py-1 rounded-md bg-slate-100 text-slate-800 border border-slate-200">
-            <Layers className="w-3.5 h-3.5 text-hoooplaaa-gold-600" />
-            {item.sku}
-          </span>
-          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
-            <Clock className="w-3.5 h-3.5 text-slate-400" />
-            {item.deliveryTarget}
-          </span>
-        </div>
+    <article
+      data-anime-item
+      className="group flex flex-col justify-between border border-brand-hairline bg-white p-6 transition-colors duration-200 hover:border-brand-gold"
+    >
+      <div>
+        {/* Zero-pill unboxed metadata line */}
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand-emerald">
+          {service.sku} · {billingLabel}
+          {service.deliveryTarget ? ` · ${service.deliveryTarget}` : ''}
+        </p>
 
-        <h3 className="text-lg font-bold text-slate-900 leading-snug">
-          <Link href={`/services/${item.slug}`} className="hover:text-hoooplaaa-gold-600 transition">
-            {name}
-          </Link>
+        {/* Title */}
+        <h3 className="mt-2.5 font-serif text-lg font-semibold leading-snug text-brand-forest">
+          {locale === 'bn' ? service.nameBn : service.name}
         </h3>
-        <p className="text-xs text-slate-600 leading-relaxed">{desc}</p>
+
+        {/* Concise description */}
+        <p className="mt-2 text-sm leading-relaxed text-brand-muted">
+          {locale === 'bn' ? service.shortDescriptionBn : service.shortDescription}
+        </p>
+
+        {/* Allowance note for VA+ tiers */}
+        {service.allowance && (
+          <p className="mt-2.5 text-xs font-medium text-brand-ink">
+            {locale === 'bn' ? service.allowanceBn ?? service.allowance : service.allowance}
+          </p>
+        )}
+
+        {/* Bundle components or top 2 inclusions */}
+        {!compact && service.inclusions.length > 0 && (
+          <ul className="mt-4 space-y-1.5 border-t border-brand-hairline/70 pt-3.5 text-xs text-brand-ink/90">
+            {service.inclusions.slice(0, 3).map((item, idx) => (
+              <li key={idx} className="flex items-start gap-2">
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-emerald" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
-      <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xl font-extrabold text-slate-900">{price}</div>
-          <div className="text-[11px] text-slate-500">
-            {item.billingPeriod === 'weekly'
-              ? locale === 'en'
-                ? 'per week'
-                : 'সাপ্তাহিক'
-              : locale === 'en'
-              ? 'one-time setup'
-              : 'এককালীন সেটআপ'}
+      {/* Pricing & Actions */}
+      <div className="mt-6 border-t border-brand-hairline pt-4">
+        <div className="flex items-end justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-muted">
+              {showLaunchContrast
+                ? locale === 'bn'
+                  ? '২০২৬ লঞ্চ মূল্য'
+                  : '2026 Launch Offer'
+                : locale === 'bn'
+                ? 'স্ট্যান্ডার্ড লিস্ট রেট'
+                : 'Standard List Rate'}
+            </p>
+            <p className="tabular-price mt-0.5 text-2xl font-bold tracking-tight text-brand-forest">
+              {service.isFromPrice ? (locale === 'bn' ? 'শুরু ' : 'From ') : ''}
+              {formatBdt(effectiveMinor)}
+              {service.billingPeriod === 'monthly' && (
+                <span className="text-xs font-medium text-brand-muted">
+                  {locale === 'bn' ? '/মাস' : '/mo'}
+                </span>
+              )}
+            </p>
           </div>
+
+          {showLaunchContrast && (
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-wider text-brand-muted">
+                {locale === 'bn' ? 'স্ট্যান্ডার্ড রেট' : 'Standard List'}
+              </p>
+              <p className="tabular-price text-sm font-semibold text-brand-muted">
+                {formatBdt(regularMinor)}
+                {service.billingPeriod === 'monthly' ? (locale === 'bn' ? '/মাস' : '/mo') : ''}
+              </p>
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        {service.billingPeriod === 'monthly' && (
+          <p className="mt-2 text-[11px] text-brand-muted">
+            {locale === 'bn'
+              ? '১ম মাসের লঞ্চ অফার; ২য় মাস থেকে সম্মতিতে স্ট্যান্ডার্ড রেট।'
+              : 'Launch rate applies to Month 1 only; standard renewal with consent.'}
+          </p>
+        )}
+
+        <div className="mt-4 flex items-center gap-2">
           <Link
-            href={`/services/${item.slug}`}
-            className="px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+            href={`/services/${service.slug}`}
+            className="flex-1 border border-brand-forest/25 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider text-brand-forest transition-colors hover:border-brand-forest hover:bg-brand-ivory"
           >
-            {locale === 'en' ? 'Details' : 'বিস্তারিত'}
+            {locale === 'bn' ? 'বিস্তারিত' : 'Details'}
           </Link>
           <Link
-            href={
-              item.sku === 'HI-BUNDLE-3' ? '/build?preset=bundle' : `/build?sku=${item.sku}`
-            }
-            className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold inline-flex items-center gap-1 transition"
+            href={`/build?sku=${encodeURIComponent(service.sku)}`}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 bg-brand-forest px-3 py-2 text-xs font-semibold uppercase tracking-wider text-brand-ivory transition-colors hover:bg-brand-teal"
           >
-            <span>{locale === 'en' ? 'Configure' : 'নির্বাচন'}</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            <span>{locale === 'bn' ? 'নির্বাচন' : 'Configure'}</span>
+            <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </div>

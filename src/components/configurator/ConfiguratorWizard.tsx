@@ -1,27 +1,39 @@
 'use client';
 
-import React, { useState, useEffect, useId } from 'react';
-import Link from 'next/link';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useT } from '@/lib/i18n';
-import { useApp } from '../providers/AppProviders';
-import { CANONICAL_SERVICES } from '@/domain/catalog';
-import { BusinessProfile, QuoteSnapshot } from '@/domain/types';
+import Link from 'next/link';
 import {
-  CheckCircle2,
+  V3_BUNDLES,
+  V3_CORE_SERVICES,
+  V3_DEPARTMENTS,
+  V3_SPECIALIZED_ADDONS,
+  V3_VARIANTS,
+  findServiceBySku,
+  formatBdt,
+  getActivePricingWindow,
+  getEffectivePriceMinor,
+} from '@/domain/catalog';
+import { BRAND_V3 } from '@/domain/brand-v3';
+import { QuoteSnapshot } from '@/domain/types';
+import { useApp } from '@/components/providers/AppProviders';
+import { useT } from '@/lib/i18n';
+import { AnimatedBdtCounter } from '@/components/motion/AnimeMotion';
+import {
   AlertTriangle,
-  Layers,
-  ArrowRight,
   ArrowLeft,
-  ShieldAlert,
-  Sparkles,
-  HelpCircle,
-  Clock,
+  ArrowRight,
   Check,
-  Building2,
-  Globe,
-  Lock,
+  Info,
+  ShieldCheck,
+  X,
 } from 'lucide-react';
+
+const BUNDLE_MAP: Record<string, string[]> = {
+  PK01: ['B01', 'B02', 'B03'],
+  PK02: ['I01', 'I06', 'I10'],
+  PK03: ['T01', 'T02'],
+};
 
 export function ConfiguratorWizard() {
   const router = useRouter();
@@ -30,811 +42,943 @@ export function ConfiguratorWizard() {
   const { t } = useT();
 
   const [step, setStep] = useState<number>(1);
-  const [loadingQuote, setLoadingQuote] = useState<boolean>(false);
+  const [activeDeptTab, setActiveDeptTab] = useState<string>(V3_DEPARTMENTS[0].id);
+  const [activeAddonGroup, setActiveAddonGroup] = useState<string>('Advertising');
 
-  // Form State
+  // Step 1: Business Profile & Eligibility State
   const [businessName, setBusinessName] = useState<string>('');
-  const [operatingModel, setOperatingModel] = useState<BusinessProfile['operatingModel']>(
-    'in_person_storefront'
-  );
+  const [operatingModel, setOperatingModel] = useState<
+    'in_person_storefront' | 'service_area_in_person' | 'online_only_no_in_person'
+  >('in_person_storefront');
   const [websiteUrl, setWebsiteUrl] = useState<string>('');
   const [websiteCmsAccess, setWebsiteCmsAccess] = useState<boolean>(true);
-  const [facebookPageStatus, setFacebookPageStatus] =
-    useState<BusinessProfile['facebookPageStatus']>('none');
+  const [facebookPageStatus, setFacebookPageStatus] = useState<
+    'none' | 'existing_unclaimed' | 'existing_claimed' | 'restricted'
+  >('none');
 
-  // Selections
-  const [selectedPlatformSkus, setSelectedPlatformSkus] = useState<string[]>(['HI-BUNDLE-3']);
+  // Step 2 & 3: Selected SKUs
+  const [selectedPrimarySkus, setSelectedPrimarySkus] = useState<string[]>(['PK01']);
   const [selectedAddonSkus, setSelectedAddonSkus] = useState<string[]>([]);
-  const [agreedToTerms, setAgreedToTerms] = useState<boolean>(false);
 
-  // Server Quote Result
-  const [serverQuote, setServerQuote] = useState<QuoteSnapshot | null>(null);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
+  // Step 4: Server Quote State
+  const [quote, setQuote] = useState<QuoteSnapshot | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [renewalConsent, setRenewalConsent] = useState<boolean>(false);
 
-  // Initialize preset from URL query params
+  const pricingWindow = getActivePricingWindow();
+
+  // Initialize selections cleanly from URL params (?preset=PK01|PK02|PK03|bundle, ?sku=B01..X22)
   useEffect(() => {
     const preset = searchParams.get('preset');
-    const sku = searchParams.get('sku');
+    const skuParam = searchParams.get('sku') || searchParams.get('variant');
 
-    if (preset === 'bundle') {
-      setSelectedPlatformSkus(['HI-BUNDLE-3']);
-    } else if (sku) {
-      setSelectedPlatformSkus([sku]);
-    }
-  }, [searchParams]);
-
-  // Handle bundle vs individual platform toggle
-  const handlePlatformToggle = (sku: string) => {
-    if (sku === 'HI-BUNDLE-3') {
-      // Selecting bundle clears individual platform setups
-      setSelectedPlatformSkus(['HI-BUNDLE-3']);
+    if (preset) {
+      if (preset === 'bundle' || preset === 'PK01') {
+        setSelectedPrimarySkus(['PK01']);
+      } else if (preset === 'PK02' || preset === 'PK03') {
+        setSelectedPrimarySkus([preset]);
+      }
       return;
     }
 
-    // Selecting individual removes bundle
-    const filtered = selectedPlatformSkus.filter((s) => s !== 'HI-BUNDLE-3');
-    if (filtered.includes(sku)) {
-      setSelectedPlatformSkus(filtered.filter((s) => s !== sku));
-    } else {
-      setSelectedPlatformSkus([...filtered, sku]);
+    if (skuParam) {
+      const found = findServiceBySku(skuParam);
+      if (found && found.checkoutEnabled) {
+        if (found.catalogKind === 'specialized_addon') {
+          setSelectedAddonSkus([found.sku]);
+          setSelectedPrimarySkus([]);
+        } else {
+          setSelectedPrimarySkus([found.sku]);
+          if (found.categoryId) setActiveDeptTab(found.categoryId);
+        }
+      }
     }
+  }, [searchParams]);
+
+  const togglePrimarySku = (sku: string) => {
+    setSelectedPrimarySkus((prev) => {
+      const exists = prev.includes(sku);
+      if (exists) {
+        return prev.filter((s) => s !== sku);
+      }
+
+      let next = [...prev, sku];
+
+      // If selecting a signature bundle, remove its individual component SKUs automatically
+      if (BUNDLE_MAP[sku]) {
+        const comps = new Set(BUNDLE_MAP[sku]);
+        next = next.filter((s) => !comps.has(s));
+      } else {
+        // If selecting an individual component already covered by an active bundle, switch off the conflicting bundle
+        for (const [bundleCode, comps] of Object.entries(BUNDLE_MAP)) {
+          if (comps.includes(sku) && next.includes(bundleCode)) {
+            next = next.filter((s) => s !== bundleCode);
+          }
+        }
+      }
+
+      // Keep VA+ tiers mutually exclusive for clarity
+      if (sku.startsWith('V01-MODE-')) {
+        next = next.filter((s) => s === sku || !s.startsWith('V01-MODE-'));
+      }
+      // Keep A01 modes clean (suppress bare A01 if choosing a specific mode)
+      if (sku.startsWith('A01-MODE-')) {
+        next = next.filter((s) => s !== 'A01');
+      }
+      // If selecting A01-MODE-2, suppress X05 alias from add-ons
+      if (sku === 'A01-MODE-2') {
+        setSelectedAddonSkus((addons) => addons.filter((a) => a !== 'X05'));
+      }
+
+      return next;
+    });
   };
 
-  const handleAddonToggle = (sku: string) => {
-    if (selectedAddonSkus.includes(sku)) {
-      setSelectedAddonSkus(selectedAddonSkus.filter((s) => s !== sku));
-    } else {
-      setSelectedAddonSkus([...selectedAddonSkus, sku]);
+  const toggleAddonSku = (sku: string) => {
+    // Alias protection: prevent selecting X05 if A01-MODE-2 is active
+    if (sku === 'X05' && selectedPrimarySkus.includes('A01-MODE-2')) {
+      return;
     }
+    setSelectedAddonSkus((prev) =>
+      prev.includes(sku) ? prev.filter((s) => s !== sku) : [...prev, sku]
+    );
   };
 
-  // Check Google Profile eligibility locally for instant UI feedback
-  const isGoogleRequested =
-    selectedPlatformSkus.includes('HI-BUNDLE-3') ||
-    selectedPlatformSkus.includes('HI-SET-GOOGLE');
-  const isGoogleIneligible =
-    isGoogleRequested && operatingModel === 'online_only_no_in_person';
+  // Client-side live preview (authoritative calculation happens on server at Step 4!)
+  const liveEstimate = useMemo(() => {
+    const allSkus = Array.from(new Set([...selectedPrimarySkus, ...selectedAddonSkus]));
+    const items = allSkus
+      .map((sku) => findServiceBySku(sku))
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
 
-  // Check Pixel prerequisite locally
-  const isPixelRequested = selectedAddonSkus.includes('HI-ADD-PIXEL');
-  const isPixelPrerequisiteMissing =
-    isPixelRequested && (!websiteUrl.trim() || !websiteCmsAccess);
+    const effectiveTotal = items.reduce((acc, item) => acc + getEffectivePriceMinor(item), 0);
+    const standardTotal = items.reduce(
+      (acc, item) => acc + (item.regularPriceMinor ?? item.basePriceMinor),
+      0
+    );
+    const hasMonthly = items.some((i) => i.billingPeriod === 'monthly');
+    return { items, effectiveTotal, standardTotal, hasMonthly };
+  }, [selectedPrimarySkus, selectedAddonSkus]);
 
-  // Calculate live draft total for UI display (non-authoritative estimate)
-  const draftEstimateTaka = (() => {
-    let sum = 0;
-    if (selectedPlatformSkus.includes('HI-BUNDLE-3')) {
-      sum += 3000;
-    } else {
-      if (selectedPlatformSkus.includes('HI-SET-META')) sum += 1500;
-      if (selectedPlatformSkus.includes('HI-SET-GOOGLE')) sum += 1500;
-      if (selectedPlatformSkus.includes('HI-SET-LINKEDIN')) sum += 1500;
+  const handleGenerateQuote = async () => {
+    setErrorMsg(null);
+    if (!businessName.trim()) {
+      setErrorMsg(
+        locale === 'bn'
+          ? 'কোট তৈরির জন্য ব্যবসার নাম আবশ্যক।'
+          : 'Please enter your Business / Brand Name in Step 1.'
+      );
+      setStep(1);
+      return;
     }
-    if (selectedAddonSkus.includes('HI-ADD-WA')) sum += 1690;
-    if (selectedAddonSkus.includes('HI-ADD-PIXEL')) sum += 1500;
-    if (selectedAddonSkus.includes('HI-ADD-CREATIVE')) sum += 990;
-    return sum;
-  })();
 
-  // Request Server-Authoritative Quote on Step 4
-  const fetchAuthoritativeQuote = async () => {
-    setLoadingQuote(true);
-    setQuoteError(null);
+    if (selectedPrimarySkus.length === 0 && selectedAddonSkus.length === 0) {
+      setErrorMsg(
+        locale === 'bn'
+          ? 'অন্তত একটি সার্ভিস, বান্ডেল বা অ্যাড-অন নির্বাচন করুন।'
+          : 'Please select at least one service, bundle, or specialist add-on.'
+      );
+      setStep(2);
+      return;
+    }
 
+    setLoading(true);
+    setRenewalConsent(false);
     try {
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          businessId: `biz_${Date.now()}`,
-          businessName: businessName || 'My Business',
+          businessName: businessName.trim(),
           businessProfile: {
-            name: businessName,
             operatingModel,
             hasPhysicalStorefront: operatingModel === 'in_person_storefront',
             conductsInPersonVisits: operatingModel !== 'online_only_no_in_person',
-            websiteUrl,
+            websiteUrl: websiteUrl.trim(),
             websiteCmsAccess,
             facebookPageStatus,
+            metaPortfolioStatus: facebookPageStatus === 'restricted' ? 'restricted' : 'none',
           },
-          selectedPlatformSkus,
+          selectedPlatformSkus: selectedPrimarySkus,
           selectedAddonSkus,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate authoritative quote.');
+        throw new Error(data.error || 'Could not calculate server quote.');
       }
-
-      setServerQuote(data.quote);
+      setQuote(data.quote);
       setStep(4);
-    } catch (err: any) {
-      setQuoteError(err.message || 'Error communicating with quote server.');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Unexpected error calculating quote.');
     } finally {
-      setLoadingQuote(false);
+      setLoading(false);
     }
   };
 
+  const applySuggestedAlternative = (alt: string) => {
+    if (alt === 'B01+B03') {
+      setSelectedPrimarySkus(['B01', 'B03']);
+      setStep(2);
+    } else if (alt === 'HI-SET-META+HI-SET-LINKEDIN') {
+      setSelectedPrimarySkus(['HI-SET-META', 'HI-SET-LINKEDIN']);
+      setStep(2);
+    }
+  };
+
+  const departmentServices = useMemo(
+    () => V3_CORE_SERVICES.filter((s) => s.categoryId === activeDeptTab),
+    [activeDeptTab]
+  );
+
+  const groupedAddons = useMemo(
+    () => V3_SPECIALIZED_ADDONS.filter((a) => a.addonGroup === activeAddonGroup),
+    [activeAddonGroup]
+  );
+
+  const needsRenewalConsent = Boolean(
+    quote?.subscriptionRenewalNotices && quote.subscriptionRenewalNotices.length > 0
+  );
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
-      {/* Wizard Progress Bar */}
-      <div className="mb-10 max-w-3xl mx-auto">
-        <div className="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
-          <span className={step >= 1 ? 'text-hoooplaaa-gold-600 font-bold' : ''}>
-            1. Business Profile
-          </span>
-          <span className={step >= 2 ? 'text-hoooplaaa-gold-600 font-bold' : ''}>
-            2. Choose Setups
-          </span>
-          <span className={step >= 3 ? 'text-hoooplaaa-gold-600 font-bold' : ''}>
-            3. Add-on Upgrades
-          </span>
-          <span className={step >= 4 ? 'text-hoooplaaa-gold-600 font-bold' : ''}>
-            4. Authoritative Quote
+    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+      {/* Progress Bar & Step Header */}
+      <div className="mb-8 border border-brand-hairline bg-white p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-brand-forest">
+          <span>{t(`step${step}` as 'step1' | 'step2' | 'step3' | 'step4')}</span>
+          <span className="text-brand-emerald">
+            {locale === 'bn' ? pricingWindow.labelBn : pricingWindow.labelEn}
           </span>
         </div>
+
         <div
           role="progressbar"
           aria-valuemin={1}
           aria-valuemax={4}
           aria-valuenow={step}
-          className="h-2 w-full bg-slate-200 rounded-full overflow-hidden"
+          aria-label="Package configuration progress"
+          className="mt-3 h-1.5 w-full bg-brand-ivory"
         >
           <div
-            className="h-full bg-hoooplaaa-gold-500 transition-all duration-300"
+            className="h-full bg-brand-gold transition-all duration-300"
             style={{ width: `${(step / 4) * 100}%` }}
           />
         </div>
+
+        <div className="mt-3 grid grid-cols-4 gap-2 text-[11px] font-medium">
+          {[
+            { num: 1, en: '1. Business Profile', bn: '১. ব্যবসা তথ্য' },
+            { num: 2, en: '2. Bundles & Services', bn: '২. বান্ডেল ও সার্ভিস' },
+            { num: 3, en: '3. Specialist Add-ons', bn: '৩. অ্যাড-অন' },
+            { num: 4, en: '4. Authoritative Quote', bn: '৪. সার্ভার কোট' },
+          ].map((item) => (
+            <button
+              key={item.num}
+              type="button"
+              onClick={() => {
+                if (item.num < 4 || quote) setStep(item.num);
+              }}
+              className={`text-left transition-colors ${
+                step === item.num
+                  ? 'font-bold text-brand-forest'
+                  : item.num < step
+                  ? 'text-brand-emerald hover:underline'
+                  : 'text-brand-muted'
+              }`}
+            >
+              {locale === 'bn' ? item.bn : item.en}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Main Wizard Form Steps */}
-        <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-sm">
-          {/* STEP 1: Business Profile & Model */}
+      {errorMsg && (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="mb-6 flex items-start gap-3 border border-amber-700/40 bg-amber-50 p-4 text-sm text-amber-950"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+        {/* Main Step Canvas */}
+        <div className="lg:col-span-8">
+          {/* ======================== STEP 1: BUSINESS PROFILE ======================== */}
           {step === 1 && (
-          <div className="space-y-6">
-            <div>
-              <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                {t('step1')}
-              </span>
-              <h2 className="text-2xl font-bold text-slate-900 mt-1">
-                {locale === 'en' ? 'Tell us about your business' : 'আপনার ব্যবসা সম্পর্কে জানান'}
-              </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                {locale === 'en'
-                  ? 'Required to deterministically evaluate Google and Meta platform eligibility.'
-                  : 'গুগল ও মেটা প্ল্যাটফর্মের অধিকার নির্ধারণের জন্য প্রয়োজন।'}
-              </p>
-            </div>
+            <div className="border border-brand-hairline bg-white p-6 sm:p-8 space-y-6">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                  {t('step1')}
+                </p>
+                <h2 className="mt-1 font-serif text-2xl font-semibold text-brand-forest">
+                  {locale === 'bn'
+                    ? 'ব্যবসার প্রোফাইল ও এলিজিবিলিটি যাচাই'
+                    : 'Business Profile & Automated Eligibility Check'}
+                </h2>
+                <p className="mt-1 text-sm text-brand-muted">
+                  {locale === 'bn'
+                    ? 'আমরা Google, Meta এবং ওয়েবসাইট ট্র্যাকিং নীতিমালা আগেই যাচাই করি যাতে কোনো অযোগ্য অর্ডার না হয়।'
+                    : 'We validate Google Business Profile, Meta account health, and website CMS access upfront before issuing an authoritative quote.'}
+                </p>
+              </div>
 
+              <div>
+                <label
+                  htmlFor="business-name-input"
+                  className="block text-xs font-semibold uppercase tracking-wider text-brand-forest"
+                >
+                  {t('businessNameLabel')}
+                </label>
+                <input
+                  id="business-name-input"
+                  type="text"
+                  required
+                  value={businessName}
+                  onChange={(e) => setBusinessName(e.target.value)}
+                  placeholder="e.g., Gulshan Heritage Bakery or Bengal Tech Labs"
+                  className="mt-2 w-full border border-brand-hairline bg-brand-ivory/40 px-4 py-3 text-sm text-brand-forest focus:border-brand-forest focus:outline-none"
+                />
+              </div>
 
-              <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-brand-forest">
+                  {t('operatingModelLabel')}
+                </label>
+                <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  {[
+                    {
+                      id: 'in_person_storefront',
+                      title: 'Physical Storefront',
+                      desc: 'Customers visit our shop, office, or studio in person.',
+                    },
+                    {
+                      id: 'service_area_in_person',
+                      title: 'Local Service Area',
+                      desc: 'Our team visits customers at their location.',
+                    },
+                    {
+                      id: 'online_only_no_in_person',
+                      title: 'Pure Online Only',
+                      desc: 'No in-person contact (ineligible for Google Business Profile).',
+                    },
+                  ].map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() =>
+                        setOperatingModel(
+                          opt.id as
+                            | 'in_person_storefront'
+                            | 'service_area_in_person'
+                            | 'online_only_no_in_person'
+                        )
+                      }
+                      className={`border p-4 text-left transition-colors ${
+                        operatingModel === opt.id
+                          ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                          : 'border-brand-hairline bg-brand-ivory/30 text-brand-ink hover:border-brand-gold'
+                      }`}
+                    >
+                      <p className="text-sm font-semibold">{opt.title}</p>
+                      <p
+                        className={`mt-1 text-xs leading-relaxed ${
+                          operatingModel === opt.id ? 'text-brand-platinum/80' : 'text-brand-muted'
+                        }`}
+                      >
+                        {opt.desc}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Business / Brand Name *
+                  <label
+                    htmlFor="website-url-input"
+                    className="block text-xs font-semibold uppercase tracking-wider text-brand-forest"
+                  >
+                    {t('websiteUrlLabel')}
                   </label>
                   <input
-                    type="text"
-                    value={businessName}
-                    onChange={(e) => setBusinessName(e.target.value)}
-                    placeholder="e.g. Dhaka Artisan Coffee, Sylhet Textiles"
-                    className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900"
-                    required
+                    id="website-url-input"
+                    type="url"
+                    value={websiteUrl}
+                    onChange={(e) => setWebsiteUrl(e.target.value)}
+                    placeholder="https://yourbusiness.com"
+                    className="mt-2 w-full border border-brand-hairline bg-brand-ivory/40 px-4 py-2.5 text-sm text-brand-forest focus:border-brand-forest focus:outline-none"
                   />
+                  <label className="mt-2.5 flex items-center gap-2 text-xs text-brand-muted">
+                    <input
+                      type="checkbox"
+                      checked={websiteCmsAccess}
+                      onChange={(e) => setWebsiteCmsAccess(e.target.checked)}
+                      className="accent-brand-forest"
+                    />
+                    <span>I have website CMS / Tag Manager / code access</span>
+                  </label>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Operating Model (Crucial for Google Business Profile) *
+                  <label
+                    htmlFor="fb-status-select"
+                    className="block text-xs font-semibold uppercase tracking-wider text-brand-forest"
+                  >
+                    {t('facebookPageStatusLabel')}
                   </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setOperatingModel('in_person_storefront')}
-                      className={`p-3.5 rounded-xl border text-left transition ${
-                        operatingModel === 'in_person_storefront'
-                          ? 'border-hoooplaaa-gold-500 bg-amber-50/50 ring-1 ring-hoooplaaa-gold-500'
-                          : 'border-slate-200 hover:border-slate-300 bg-slate-50'
-                      }`}
-                    >
-                      <Building2 className="w-4 h-4 text-hoooplaaa-navy-900 mb-1" />
-                      <div className="font-bold text-xs text-slate-900">Physical Storefront</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        Customers visit my physical shop or office
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setOperatingModel('service_area_in_person')}
-                      className={`p-3.5 rounded-xl border text-left transition ${
-                        operatingModel === 'service_area_in_person'
-                          ? 'border-hoooplaaa-gold-500 bg-amber-50/50 ring-1 ring-hoooplaaa-gold-500'
-                          : 'border-slate-200 hover:border-slate-300 bg-slate-50'
-                      }`}
-                    >
-                      <Globe className="w-4 h-4 text-hoooplaaa-navy-900 mb-1" />
-                      <div className="font-bold text-xs text-slate-900">Service Area Business</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        I visit customers at their location in a local zone
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setOperatingModel('online_only_no_in_person')}
-                      className={`p-3.5 rounded-xl border text-left transition ${
-                        operatingModel === 'online_only_no_in_person'
-                          ? 'border-hoooplaaa-gold-500 bg-amber-50/50 ring-1 ring-hoooplaaa-gold-500'
-                          : 'border-slate-200 hover:border-slate-300 bg-slate-50'
-                      }`}
-                    >
-                      <Lock className="w-4 h-4 text-hoooplaaa-navy-900 mb-1" />
-                      <div className="font-bold text-xs text-slate-900">Online Only / Delivery</div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        No in-person contact (e-commerce/dropship)
-                      </div>
-                    </button>
-                  </div>
+                  <select
+                    id="fb-status-select"
+                    value={facebookPageStatus}
+                    onChange={(e) =>
+                      setFacebookPageStatus(
+                        e.target.value as
+                          | 'none'
+                          | 'existing_unclaimed'
+                          | 'existing_claimed'
+                          | 'restricted'
+                      )
+                    }
+                    className="mt-2 w-full border border-brand-hairline bg-brand-ivory/40 px-4 py-2.5 text-sm text-brand-forest focus:border-brand-forest focus:outline-none"
+                  >
+                    <option value="none">No existing Facebook Page yet</option>
+                    <option value="existing_claimed">Existing active Page in good standing</option>
+                    <option value="existing_unclaimed">Existing Page needs Business Portfolio linking</option>
+                    <option value="restricted">Account/Page currently restricted or disabled</option>
+                  </select>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Website URL (Optional, needed for Pixel)
-                    </label>
-                    <input
-                      type="url"
-                      value={websiteUrl}
-                      onChange={(e) => setWebsiteUrl(e.target.value)}
-                      placeholder="https://example.com"
-                      className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Existing Facebook Page Status
-                    </label>
-                    <select
-                      value={facebookPageStatus}
-                      onChange={(e) => setFacebookPageStatus(e.target.value as any)}
-                      className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-hoooplaaa-gold-500 text-slate-900 bg-white"
-                    >
-                      <option value="none">No page yet (Start from scratch)</option>
-                      <option value="existing_unclaimed">Have a page, needs professional optimization</option>
-                      <option value="existing_claimed">Have a business page & portfolio</option>
-                      <option value="restricted">Have account with policy restriction/ban</option>
-                    </select>
-                  </div>
-                </div>
-
-                {operatingModel === 'online_only_no_in_person' && (
-                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="font-semibold block">Google Policy Note:</strong>
-                      <span>
-                        Pure online businesses are not eligible for Google Business Profile under
-                        official Google guidelines. You will be able to select Meta and LinkedIn
-                        setups.
-                      </span>
-                    </div>
-                  </div>
-                )}
               </div>
 
-              <div className="pt-4 border-t border-slate-100 flex justify-end">
+              <div className="flex justify-end border-t border-brand-hairline pt-5">
                 <button
                   type="button"
-                  onClick={() => setStep(2)}
-                  disabled={!businessName.trim()}
-                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition"
+                  onClick={() => {
+                    if (!businessName.trim()) {
+                      setErrorMsg('Please enter your Business / Brand Name to continue.');
+                      return;
+                    }
+                    setErrorMsg(null);
+                    setStep(2);
+                  }}
+                  className="inline-flex items-center gap-2 bg-brand-forest px-6 py-3 text-xs font-bold uppercase tracking-[0.15em] text-brand-ivory hover:bg-brand-teal"
                 >
                   <span>{t('continuePlatform')}</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <ArrowRight className="h-4 w-4" />
                 </button>
               </div>
             </div>
           )}
 
-          {/* STEP 2: Choose Platform Setups */}
+          {/* ======================== STEP 2: BUNDLES, MODES, VA+ & 6 DEPARTMENTS ======================== */}
           {step === 2 && (
             <div className="space-y-6">
-              <div>
-                <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  {t('step2')}
-                </span>
-                <h2 className="text-2xl font-bold text-slate-900 mt-1">
-                  Select your digital platforms
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Choose the complete 3-platform hero bundle or customize individual platforms.
+              {/* Signature Bundles */}
+              <div className="border border-brand-hairline bg-white p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                  {t('step2')} · Signature Bundles (Auto-Deduplicated)
                 </p>
-              </div>
+                <h2 className="mt-1 font-serif text-2xl font-semibold text-brand-forest">
+                  Select Signature Bundles, Managed Tiers, or Core Services
+                </h2>
 
-              {/* Hero Bundle Option */}
-              <div
-                onClick={() => handlePlatformToggle('HI-BUNDLE-3')}
-                className={`p-5 rounded-2xl border-2 cursor-pointer transition relative ${
-                  selectedPlatformSkus.includes('HI-BUNDLE-3')
-                    ? 'border-hoooplaaa-gold-500 bg-amber-50/40 shadow-sm'
-                    : 'border-slate-200 hover:border-slate-300 bg-white'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-hoooplaaa-gold-500 text-hoooplaaa-navy-950 text-[10px] font-extrabold uppercase tracking-wider">
-                        Hero Offer
-                      </span>
-                      <h3 className="font-bold text-base text-slate-900">
-                        Complete 3-Platform Business Setup
-                      </h3>
-                    </div>
-                    <p className="text-xs text-slate-600 max-w-xl">
-                      Meta Portfolio + Facebook Page + Instagram + Google Business Profile +
-                      LinkedIn Company Page. Includes brand consistency audit and post-sale detailed audit.
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-xl font-extrabold text-slate-900">৳3,000</div>
-                    <div className="text-[11px] text-emerald-600 font-bold">Save ৳1,500</div>
-                  </div>
+                <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  {V3_BUNDLES.map((b) => {
+                    const selected = selectedPrimarySkus.includes(b.sku);
+                    const eff = getEffectivePriceMinor(b);
+                    const reg = b.regularPriceMinor ?? b.basePriceMinor;
+                    return (
+                      <button
+                        key={b.sku}
+                        type="button"
+                        onClick={() => togglePrimarySku(b.sku)}
+                        aria-pressed={selected}
+                        className={`flex flex-col justify-between border p-4 text-left transition-colors ${
+                          selected
+                            ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                            : 'border-brand-hairline bg-brand-ivory/35 text-brand-ink hover:border-brand-gold'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span
+                              className={`text-[10px] font-bold uppercase tracking-wider ${
+                                selected ? 'text-brand-gold' : 'text-brand-emerald'
+                              }`}
+                            >
+                              {b.sku} · {b.bundleComponents?.join('+')}
+                            </span>
+                            {selected && <Check className="h-4 w-4 text-brand-gold" />}
+                          </div>
+                          <p className="mt-1.5 font-serif text-base font-semibold">
+                            {locale === 'bn' ? b.nameBn : b.name}
+                          </p>
+                        </div>
+                        <div className="mt-4 pt-3 border-t border-current/15">
+                          <p className="tabular-price text-xl font-bold">{formatBdt(eff)}</p>
+                          {pricingWindow.isLaunchActive && (
+                            <p className="tabular-price text-[11px] opacity-70">
+                              Standard List: {formatBdt(reg)}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
-
-                {isGoogleIneligible && selectedPlatformSkus.includes('HI-BUNDLE-3') && (
-                  <div className="mt-3 p-3 rounded-lg bg-amber-100/70 border border-amber-300 text-amber-900 text-xs flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="font-semibold block">Google Ineligibility Detected:</strong>
-                      <span>
-                        Your business operates purely online. Google policy does not allow GBP creation
-                        without in-person customer visits. We recommend unchecking the bundle and
-                        selecting Meta + LinkedIn individually (Total ৳3,000).
-                      </span>
-                    </div>
-                  </div>
-                )}
               </div>
 
-              <div className="relative flex py-2 items-center">
-                <div className="flex-grow border-t border-slate-200"></div>
-                <span className="flex-shrink mx-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                  OR CHOOSE INDIVIDUAL PLATFORMS
-                </span>
-                <div className="flex-grow border-t border-slate-200"></div>
+              {/* Advertising Modes & HOOOPLAAA VA+ Tiers */}
+              <div className="border border-brand-hairline bg-white p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                  Delivery Modes & Monthly VA+ Tiers
+                </p>
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {V3_VARIANTS.map((v) => {
+                    const selected = selectedPrimarySkus.includes(v.sku);
+                    const eff = getEffectivePriceMinor(v);
+                    const reg = v.regularPriceMinor ?? v.basePriceMinor;
+                    return (
+                      <button
+                        key={v.sku}
+                        type="button"
+                        onClick={() => togglePrimarySku(v.sku)}
+                        aria-pressed={selected}
+                        className={`flex items-start justify-between gap-3 border p-4 text-left transition-colors ${
+                          selected
+                            ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                            : 'border-brand-hairline bg-brand-ivory/25 text-brand-ink hover:border-brand-gold'
+                        }`}
+                      >
+                        <div>
+                          <p
+                            className={`text-[10px] font-semibold uppercase tracking-wider ${
+                              selected ? 'text-brand-softgold' : 'text-brand-emerald'
+                            }`}
+                          >
+                            {v.sku} · {v.billingPeriod === 'monthly' ? 'Monthly (1st mo offer)' : 'One-time'}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold">
+                            {locale === 'bn' ? v.nameBn : v.name}
+                          </p>
+                          {v.allowance && (
+                            <p className="mt-0.5 text-[11px] opacity-80">{v.allowance}</p>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="tabular-price text-base font-bold">
+                            {formatBdt(eff)}
+                            {v.billingPeriod === 'monthly' ? '/mo' : ''}
+                          </p>
+                          {pricingWindow.isLaunchActive && (
+                            <p className="tabular-price text-[10px] opacity-70">
+                              Std {formatBdt(reg)}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Individual Platform Cards */}
-              <div className="space-y-3">
-                {/* Meta */}
-                <div
-                  onClick={() => handlePlatformToggle('HI-SET-META')}
-                  className={`p-4 rounded-xl border cursor-pointer transition flex items-center justify-between ${
-                    selectedPlatformSkus.includes('HI-SET-META')
-                      ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-500'
-                      : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedPlatformSkus.includes('HI-SET-META')
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'border-slate-300'
+              {/* 6 Departments Individual Core Services */}
+              <div className="border border-brand-hairline bg-white p-6">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                  Individual Core Services (26 Services Across 6 Departments)
+                </p>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {V3_DEPARTMENTS.map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => setActiveDeptTab(d.id)}
+                      className={`border px-3 py-1.5 text-xs font-medium ${
+                        activeDeptTab === d.id
+                          ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                          : 'border-brand-hairline bg-brand-ivory/40 text-brand-ink hover:border-brand-gold'
                       }`}
                     >
-                      {selectedPlatformSkus.includes('HI-SET-META') && (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">Meta Business Setup</h4>
-                      <p className="text-[11px] text-slate-500">
-                        Portfolio, Facebook Page, Instagram Linking, Delegated Handover
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳1,500</span>
-                  </div>
+                      {d.code}. {locale === 'bn' ? d.nameBn : d.name}
+                    </button>
+                  ))}
                 </div>
 
-                {/* Google */}
-                <div
-                  onClick={() => {
-                    if (operatingModel === 'online_only_no_in_person') return;
-                    handlePlatformToggle('HI-SET-GOOGLE');
-                  }}
-                  className={`p-4 rounded-xl border transition flex items-center justify-between ${
-                    operatingModel === 'online_only_no_in_person'
-                      ? 'opacity-50 cursor-not-allowed bg-slate-100 border-slate-200'
-                      : selectedPlatformSkus.includes('HI-SET-GOOGLE')
-                      ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-500 cursor-pointer'
-                      : 'border-slate-200 hover:border-slate-300 bg-white cursor-pointer'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedPlatformSkus.includes('HI-SET-GOOGLE')
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'border-slate-300'
-                      }`}
-                    >
-                      {selectedPlatformSkus.includes('HI-SET-GOOGLE') && (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">
-                        Google Business Profile Setup
-                      </h4>
-                      <p className="text-[11px] text-slate-500">
-                        {operatingModel === 'online_only_no_in_person'
-                          ? 'Ineligible for online-only businesses (Google policy requirement)'
-                          : 'Storefront or Service-area setup with category & verification guidance'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳1,500</span>
-                  </div>
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {departmentServices.map((srv) => {
+                    const selected = selectedPrimarySkus.includes(srv.sku);
+                    const coveredByBundle = Object.entries(BUNDLE_MAP).find(
+                      ([bCode, comps]) =>
+                        selectedPrimarySkus.includes(bCode) && comps.includes(srv.sku)
+                    )?.[0];
+                    const eff = getEffectivePriceMinor(srv);
+                    const reg = srv.regularPriceMinor ?? srv.basePriceMinor;
+
+                    return (
+                      <button
+                        key={srv.sku}
+                        type="button"
+                        onClick={() => togglePrimarySku(srv.sku)}
+                        aria-pressed={selected}
+                        className={`flex items-start justify-between gap-3 border p-4 text-left transition-colors ${
+                          selected
+                            ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                            : coveredByBundle
+                            ? 'border-brand-emerald/40 bg-brand-ivory/70 text-brand-ink'
+                            : 'border-brand-hairline bg-white text-brand-ink hover:border-brand-gold'
+                        }`}
+                      >
+                        <div>
+                          <p
+                            className={`text-[10px] font-semibold uppercase tracking-wider ${
+                              selected ? 'text-brand-gold' : 'text-brand-emerald'
+                            }`}
+                          >
+                            {srv.sku}
+                            {coveredByBundle ? ` · Included in ${coveredByBundle}` : ''}
+                          </p>
+                          <p className="mt-1 text-sm font-semibold">
+                            {locale === 'bn' ? srv.nameBn : srv.name}
+                          </p>
+                          <p className="mt-1 text-xs opacity-75 line-clamp-2">
+                            {locale === 'bn' ? srv.shortDescriptionBn : srv.shortDescription}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="tabular-price text-sm font-bold">
+                            {srv.isFromPrice ? 'From ' : ''}
+                            {formatBdt(eff)}
+                          </p>
+                          {pricingWindow.isLaunchActive && (
+                            <p className="tabular-price text-[10px] opacity-65">
+                              Std {formatBdt(reg)}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
 
-                {/* LinkedIn */}
-                <div
-                  onClick={() => handlePlatformToggle('HI-SET-LINKEDIN')}
-                  className={`p-4 rounded-xl border cursor-pointer transition flex items-center justify-between ${
-                    selectedPlatformSkus.includes('HI-SET-LINKEDIN')
-                      ? 'border-blue-500 bg-blue-50/40 ring-1 ring-blue-500'
-                      : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedPlatformSkus.includes('HI-SET-LINKEDIN')
-                          ? 'bg-blue-600 border-blue-600 text-white'
-                          : 'border-slate-300'
-                      }`}
-                    >
-                      {selectedPlatformSkus.includes('HI-SET-LINKEDIN') && (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">LinkedIn Company Page</h4>
-                      <p className="text-[11px] text-slate-500">
-                        Corporate Page, executive cover, about narrative, admin delegation
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳1,500</span>
-                  </div>
+                <div className="mt-6 flex items-center justify-between border-t border-brand-hairline pt-5">
+                  <button
+                    type="button"
+                    onClick={() => setStep(1)}
+                    className="inline-flex items-center gap-1.5 border border-brand-forest/30 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-brand-forest hover:bg-brand-ivory"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span>Back</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStep(3)}
+                    className="inline-flex items-center gap-2 bg-brand-forest px-6 py-3 text-xs font-bold uppercase tracking-[0.15em] text-brand-ivory hover:bg-brand-teal"
+                  >
+                    <span>{t('continueAddons')}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
                 </div>
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 flex justify-between">
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Back</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep(3)}
-                  disabled={selectedPlatformSkus.length === 0}
-                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition"
-                >
-                  <span>Continue to Add-on Options</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
               </div>
             </div>
           )}
 
-          {/* STEP 3: Add-on Upgrades */}
+          {/* ======================== STEP 3: 22 SPECIALIST ADD-ONS (X01–X22) ======================== */}
           {step === 3 && (
-            <div className="space-y-6">
-              <div>
-                <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  {t('step3')}
-                </span>
-                <h2 className="text-2xl font-bold text-slate-900 mt-1">
-                  Add-on growth & tracking tools
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Optional additions to enhance customer conversion and tracking.
-                </p>
+            <div className="border border-brand-hairline bg-white p-6 sm:p-8">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                {t('step3')}
+              </p>
+              <h2 className="mt-1 font-serif text-2xl font-semibold text-brand-forest">
+                {t('addOnHeading')}
+              </h2>
+              <p className="mt-1 text-sm text-brand-muted">{t('addOnDescription')}</p>
+
+              {/* Group Switcher */}
+              <div className="mt-5 flex flex-wrap gap-2">
+                {['Advertising', 'VA+', 'Leads & CRM', 'Tracking'].map((grp) => (
+                  <button
+                    key={grp}
+                    type="button"
+                    onClick={() => setActiveAddonGroup(grp)}
+                    className={`border px-3.5 py-1.5 text-xs font-semibold uppercase tracking-wider ${
+                      activeAddonGroup === grp
+                        ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                        : 'border-brand-hairline bg-brand-ivory/40 text-brand-ink hover:border-brand-gold'
+                    }`}
+                  >
+                    {grp}
+                  </button>
+                ))}
               </div>
 
-              <div className="space-y-3">
-                {/* WhatsApp */}
-                <div
-                  onClick={() => handleAddonToggle('HI-ADD-WA')}
-                  className={`p-4 rounded-xl border cursor-pointer transition flex items-center justify-between ${
-                    selectedAddonSkus.includes('HI-ADD-WA')
-                      ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500'
-                      : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedAddonSkus.includes('HI-ADD-WA')
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'border-slate-300'
+              <div className="mt-5 space-y-3">
+                {groupedAddons.map((addon) => {
+                  const selected = selectedAddonSkus.includes(addon.sku);
+                  const blockedByAlias =
+                    addon.sku === 'X05' && selectedPrimarySkus.includes('A01-MODE-2');
+                  const eff = getEffectivePriceMinor(addon);
+                  const reg = addon.regularPriceMinor ?? addon.basePriceMinor;
+
+                  return (
+                    <button
+                      key={addon.sku}
+                      type="button"
+                      disabled={blockedByAlias}
+                      onClick={() => toggleAddonSku(addon.sku)}
+                      aria-pressed={selected}
+                      className={`flex w-full items-start justify-between gap-4 border p-4 text-left transition-colors ${
+                        blockedByAlias
+                          ? 'cursor-not-allowed border-brand-hairline bg-brand-ivory/70 opacity-65'
+                          : selected
+                          ? 'border-brand-forest bg-brand-forest text-brand-ivory'
+                          : 'border-brand-hairline bg-white text-brand-ink hover:border-brand-gold'
                       }`}
                     >
-                      {selectedAddonSkus.includes('HI-ADD-WA') && <Check className="w-3.5 h-3.5" />}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">
-                        WhatsApp Automation Setup
-                      </h4>
-                      <p className="text-[11px] text-slate-500">
-                        1 core welcome sequence, away message schedule, quick replies
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳1,690</span>
-                  </div>
-                </div>
-
-                {/* Meta Pixel */}
-                <div
-                  onClick={() => handleAddonToggle('HI-ADD-PIXEL')}
-                  className={`p-4 rounded-xl border cursor-pointer transition flex items-center justify-between ${
-                    selectedAddonSkus.includes('HI-ADD-PIXEL')
-                      ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500'
-                      : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedAddonSkus.includes('HI-ADD-PIXEL')
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'border-slate-300'
-                      }`}
-                    >
-                      {selectedAddonSkus.includes('HI-ADD-PIXEL') && (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">
-                        Meta Pixel Tracking Setup
-                      </h4>
-                      <p className="text-[11px] text-slate-500">
-                        Base code installation, standard events (PageView, Lead), event testing
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳1,500</span>
-                  </div>
-                </div>
-
-                {isPixelPrerequisiteMissing && (
-                  <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="font-semibold block">Prerequisite Warning:</strong>
-                      <span>
-                        Meta Pixel requires an active website. Please ensure you provide your website
-                        URL in Step 1 or uncheck the pixel add-on.
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Ad Creative */}
-                <div
-                  onClick={() => handleAddonToggle('HI-ADD-CREATIVE')}
-                  className={`p-4 rounded-xl border cursor-pointer transition flex items-center justify-between ${
-                    selectedAddonSkus.includes('HI-ADD-CREATIVE')
-                      ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500'
-                      : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-5 h-5 rounded flex items-center justify-center border ${
-                        selectedAddonSkus.includes('HI-ADD-CREATIVE')
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'border-slate-300'
-                      }`}
-                    >
-                      {selectedAddonSkus.includes('HI-ADD-CREATIVE') && (
-                        <Check className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-slate-900">
-                        Professional Ad Creative (Basic Static)
-                      </h4>
-                      <p className="text-[11px] text-slate-500">
-                        1 original bespoke static ad visual (Square + Story) + 1 revision
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-bold text-sm text-slate-900">৳990</span>
-                  </div>
-                </div>
+                      <div>
+                        <p
+                          className={`text-[10px] font-semibold uppercase tracking-wider ${
+                            selected ? 'text-brand-gold' : 'text-brand-emerald'
+                          }`}
+                        >
+                          {addon.sku} · {addon.billingPeriod === 'monthly' ? 'Monthly' : 'One-time'}
+                          {blockedByAlias ? ' · Already selected via A01-MODE-2' : ''}
+                        </p>
+                        <p className="mt-1 text-sm font-semibold">
+                          {locale === 'bn' ? addon.nameBn : addon.name}
+                        </p>
+                        <p className="mt-1 text-xs opacity-80">
+                          {locale === 'bn' ? addon.shortDescriptionBn : addon.shortDescription}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="tabular-price text-base font-bold">
+                          {formatBdt(eff)}
+                          {addon.billingPeriod === 'monthly' ? '/mo' : ''}
+                        </p>
+                        {pricingWindow.isLaunchActive && (
+                          <p className="tabular-price text-[10px] opacity-65">
+                            Std {formatBdt(reg)}
+                          </p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
 
-              {quoteError && (
-                <div
-                  role="alert"
-                  className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-start gap-2"
-                >
-                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                  <span>{quoteError}</span>
-                </div>
-              )}
-
-              <div className="pt-4 border-t border-slate-100 flex justify-between">
+              <div className="mt-8 flex items-center justify-between border-t border-brand-hairline pt-5">
                 <button
                   type="button"
                   onClick={() => setStep(2)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+                  className="inline-flex items-center gap-1.5 border border-brand-forest/30 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-brand-forest hover:bg-brand-ivory"
                 >
-                  <ArrowLeft className="w-4 h-4" />
+                  <ArrowLeft className="h-3.5 w-3.5" />
                   <span>Back</span>
                 </button>
                 <button
                   type="button"
-                  onClick={fetchAuthoritativeQuote}
-                  disabled={loadingQuote}
-                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition"
+                  disabled={loading}
+                  onClick={handleGenerateQuote}
+                  className="inline-flex items-center gap-2 bg-brand-gold px-7 py-3 text-xs font-bold uppercase tracking-[0.15em] text-brand-forest hover:bg-brand-softgold disabled:opacity-60"
                 >
-                  {loadingQuote ? (
-                    <span>Validating on Server...</span>
-                  ) : (
-                    <>
-                      <span>Generate Server Quote</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
+                  <span>{loading ? 'Calculating Authoritative Quote...' : t('generateQuote')}</span>
+                  <ArrowRight className="h-4 w-4" />
                 </button>
               </div>
             </div>
           )}
 
-          {/* STEP 4: Authoritative Server Quote Review */}
-          {step === 4 && serverQuote && (
-            <div className="space-y-6">
-              <div>
-                <span className="text-xs font-bold text-hoooplaaa-gold-600 uppercase tracking-wider">
-                  Step 4 of 4
-                </span>
-                <h2 className="text-2xl font-bold text-slate-900 mt-1">
-                  Server-Authoritative Quote Snapshot
-                </h2>
-                <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
-                  <span>Quote Ref: {serverQuote.id}</span>
-                  <span>•</span>
-                  <span>Rule Version: {serverQuote.ruleVersion}</span>
+          {/* ======================== STEP 4: AUTHORITATIVE SERVER QUOTE ======================== */}
+          {step === 4 && quote && (
+            <div className="border border-brand-hairline bg-white p-6 sm:p-8 space-y-6">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-brand-hairline pb-5">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+                    {quote.id} · {quote.pricingWindow?.labelEn || 'Authoritative Server Quote'}
+                  </p>
+                  <h2 className="mt-1 font-serif text-2xl font-semibold text-brand-forest">
+                    Authoritative Quote for {quote.businessName}
+                  </h2>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Rule version {quote.ruleVersion} · Immutable SHA-256 hash:{' '}
+                    <code className="font-mono text-[11px]">{quote.termsHash.slice(0, 16)}…</code>
+                  </p>
                 </div>
+                <span
+                  className={`border px-3 py-1 text-xs font-bold uppercase tracking-wider ${
+                    quote.eligibility.canSelfCheckout
+                      ? 'border-brand-emerald/40 bg-emerald-50 text-brand-emerald'
+                      : 'border-amber-600/40 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {quote.eligibility.canSelfCheckout ? 'Ready for Checkout' : 'Manual Scope Review'}
+                </span>
               </div>
 
-              {quoteError && (
-                <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs">
-                  {quoteError}
+              {/* Deduplication Notes */}
+              {quote.deduplicationNotes && quote.deduplicationNotes.length > 0 && (
+                <div className="border border-brand-emerald/35 bg-brand-ivory p-4 text-xs text-brand-ink space-y-1">
+                  <p className="font-semibold uppercase tracking-wider text-brand-emerald">
+                    Automatic Deduplication Applied
+                  </p>
+                  {quote.deduplicationNotes.map((note, idx) => (
+                    <p key={idx}>• {note}</p>
+                  ))}
                 </div>
               )}
 
               {/* Eligibility Flags */}
-              {serverQuote.eligibility.flags.length > 0 && (
-                <div className="space-y-2">
-                  {serverQuote.eligibility.flags.map((flag, idx) => (
+              {quote.eligibility.flags.length > 0 && (
+                <div className="space-y-2.5" aria-live="polite">
+                  {quote.eligibility.flags.map((flag, idx) => (
                     <div
                       key={idx}
-                      className={`p-3.5 rounded-xl text-xs flex items-start gap-2.5 ${
+                      className={`flex items-start gap-3 border p-4 text-xs leading-relaxed ${
                         flag.severity === 'blocker'
-                          ? 'bg-red-50 border border-red-200 text-red-900'
-                          : 'bg-amber-50 border border-amber-200 text-amber-900'
+                          ? 'border-amber-700/40 bg-amber-50 text-amber-950'
+                          : 'border-brand-hairline bg-brand-ivory/60 text-brand-ink'
                       }`}
                     >
-                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      {flag.severity === 'blocker' ? (
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                      ) : (
+                        <Info className="mt-0.5 h-4 w-4 shrink-0 text-brand-emerald" />
+                      )}
                       <div>
-                        <strong className="font-semibold block">{flag.code}</strong>
-                        <span>{flag.message}</span>
+                        <p className="font-semibold">{flag.code}</p>
+                        <p className="mt-0.5">{locale === 'bn' ? flag.messageBn : flag.message}</p>
                       </div>
                     </div>
                   ))}
+
+                  {quote.eligibility.recommendedAlternativeSku && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 border border-brand-gold/50 bg-brand-ivory p-4 text-xs">
+                      <span>
+                        Suggested eligible configuration:{' '}
+                        <strong>{quote.eligibility.recommendedAlternativeSku}</strong>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applySuggestedAlternative(quote.eligibility.recommendedAlternativeSku!)
+                        }
+                        className="bg-brand-forest px-4 py-2 font-semibold uppercase tracking-wider text-brand-ivory hover:bg-brand-teal"
+                      >
+                        Switch to Eligible Services
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Line Items Table */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden text-xs">
-                <div className="bg-slate-100 px-4 py-2.5 font-bold text-slate-700 flex justify-between">
-                  <span>Item & Scope Snapshot</span>
-                  <span>Price (BDT)</span>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {serverQuote.items.map((item, idx) => (
-                    <div key={idx} className="p-4 flex justify-between gap-4">
-                      <div className="space-y-1">
-                        <div className="font-bold text-slate-900 text-sm">{item.name}</div>
-                        <div className="text-[11px] text-slate-500">SKU: {item.sku}</div>
-                        <div className="text-[11px] text-slate-600">
-                          Delivery: {item.deliveryTarget}
-                        </div>
-                      </div>
-                      <div className="font-bold text-slate-900 text-sm">
-                        ৳{(item.lineTotalMinor / 100).toLocaleString('en-US')}
-                      </div>
+              {/* Itemized Server Quote Breakdown */}
+              <div className="divide-y divide-brand-hairline border border-brand-hairline">
+                {quote.items.map((item) => (
+                  <div key={item.sku} className="flex items-start justify-between gap-4 p-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-brand-emerald">
+                        {item.sku} · {item.billingPeriod.replace('_', ' ')} · {item.deliveryTarget}
+                      </p>
+                      <p className="mt-0.5 font-semibold text-brand-forest">
+                        {locale === 'bn' ? item.nameBn : item.name}
+                      </p>
+                      {item.offerPolicy && (
+                        <p className="mt-1 text-xs text-brand-muted">{item.offerPolicy}</p>
+                      )}
                     </div>
-                  ))}
+                    <div className="shrink-0 text-right">
+                      <p className="tabular-price text-base font-bold text-brand-forest">
+                        {formatBdt(item.lineTotalMinor)}
+                      </p>
+                      {item.regularUnitPriceMinor &&
+                        item.regularUnitPriceMinor > item.unitPriceMinor && (
+                          <p className="tabular-price text-[11px] text-brand-muted">
+                            Standard List: {formatBdt(item.regularUnitPriceMinor)}
+                          </p>
+                        )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Subscription Renewal Disclosure & Consent */}
+              {needsRenewalConsent && quote.subscriptionRenewalNotices && (
+                <div className="border border-brand-gold/50 bg-brand-ivory p-5 space-y-3">
+                  <p className="text-xs font-bold uppercase tracking-wider text-brand-forest">
+                    Monthly Service Renewal Disclosure (Required)
+                  </p>
+                  <ul className="space-y-1.5 text-xs text-brand-ink">
+                    {quote.subscriptionRenewalNotices.map((n) => (
+                      <li key={n.sku}>• {locale === 'bn' ? n.noticeBn : n.noticeEn}</li>
+                    ))}
+                  </ul>
+                  <label className="flex items-start gap-2.5 pt-2 text-xs font-medium text-brand-forest">
+                    <input
+                      type="checkbox"
+                      checked={renewalConsent}
+                      onChange={(e) => setRenewalConsent(e.target.checked)}
+                      className="mt-0.5 accent-brand-forest"
+                    />
+                    <span>
+                      I acknowledge that the 2026 Launch Offer applies to Month 1 only, and any
+                      subsequent month renews at the stated Standard List Rate only with my consent.
+                    </span>
+                  </label>
                 </div>
-                <div className="bg-slate-50 p-4 border-t border-slate-200 space-y-1.5">
-                  <div className="flex justify-between text-slate-600">
-                    <span>Subtotal:</span>
-                    <span>৳{(serverQuote.subtotalMinor / 100).toLocaleString('en-US')}</span>
+              )}
+
+              {/* Totals */}
+              <div className="border-t border-brand-hairline pt-4 space-y-2 text-sm">
+                {typeof quote.standardSubtotalMinor === 'number' &&
+                  quote.standardSubtotalMinor > quote.totalMinor && (
+                    <div className="flex justify-between text-xs text-brand-muted">
+                      <span>Planned Standard List Total</span>
+                      <span className="tabular-price">{formatBdt(quote.standardSubtotalMinor)}</span>
+                    </div>
+                  )}
+                {typeof quote.launchSavingsMinor === 'number' && quote.launchSavingsMinor > 0 && (
+                  <div className="flex justify-between text-xs font-medium text-brand-emerald">
+                    <span>2026 Launch Offer Difference</span>
+                    <span className="tabular-price">−{formatBdt(quote.launchSavingsMinor)}</span>
                   </div>
-                  <div className="flex justify-between font-bold text-slate-900 text-base pt-2 border-t border-slate-200">
-                    <span>Total Authoritative Quote:</span>
-                    <span>৳{(serverQuote.totalMinor / 100).toLocaleString('en-US')}</span>
-                  </div>
+                )}
+                <div className="flex justify-between border-t border-brand-hairline pt-3 text-lg font-bold text-brand-forest">
+                  <span>Authoritative Total Payable Now</span>
+                  <span className="tabular-price">{formatBdt(quote.totalMinor)}</span>
                 </div>
               </div>
 
-              {/* Terms and Inclusions Acknowledgement */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                <label className="flex items-start gap-2.5 cursor-pointer text-xs text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={agreedToTerms}
-                    onChange={(e) => setAgreedToTerms(e.target.checked)}
-                    className="mt-0.5 rounded border-slate-300 text-hoooplaaa-gold-500 focus:ring-hoooplaaa-gold-500"
-                  />
-                  <span>
-                    I confirm that I am the authorized representative of{' '}
-                    <strong>{businessName}</strong>, accept the defined scope and exclusions
-                    (including separate ad budgets and WhatsApp API costs), and agree to provide
-                    delegated partner access upon checkout.
-                  </span>
-                </label>
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 flex justify-between">
+              {/* Step 4 Action Buttons */}
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-brand-hairline pt-5">
                 <button
                   type="button"
-                  onClick={() => setStep(3)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+                  onClick={() => setStep(2)}
+                  className="border border-brand-forest/30 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider text-brand-forest hover:bg-brand-ivory"
                 >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Modify Selections</span>
+                  {t('modifySelections')}
                 </button>
 
-                {serverQuote.eligibility.canSelfCheckout ? (
+                {quote.eligibility.canSelfCheckout ? (
                   <button
                     type="button"
-                    onClick={() => router.push(`/checkout/${serverQuote.id}`)}
-                    disabled={!agreedToTerms}
-                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-hoooplaaa-gold-500 to-hoooplaaa-gold-600 hover:from-hoooplaaa-gold-400 hover:to-hoooplaaa-gold-500 disabled:opacity-50 text-hoooplaaa-navy-950 font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-gold-glow transition"
+                    disabled={needsRenewalConsent && !renewalConsent}
+                    onClick={() => router.push(`/checkout/${quote.id}`)}
+                    className="inline-flex items-center gap-2 bg-brand-gold px-7 py-3 text-xs font-bold uppercase tracking-[0.15em] text-brand-forest hover:bg-brand-softgold disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <span>Proceed to Secure Checkout</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <span>{t('proceedCheckout')}</span>
+                    <ArrowRight className="h-4 w-4" />
                   </button>
                 ) : (
                   <Link
-                    href={`/audit?reason=${encodeURIComponent(serverQuote.eligibility.customScopeReason || 'Manual review required')}`}
-                    className="px-6 py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-2 shadow-sm transition"
+                    href="/audit"
+                    className="inline-flex items-center gap-2 bg-brand-forest px-6 py-3 text-xs font-bold uppercase tracking-[0.15em] text-brand-ivory hover:bg-brand-teal"
                   >
-                    <span>Request Custom Scope Review</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <span>{t('requestScope')}</span>
+                    <ArrowRight className="h-4 w-4" />
                   </Link>
                 )}
               </div>
@@ -842,68 +986,80 @@ export function ConfiguratorWizard() {
           )}
         </div>
 
-        {/* Live Sidebar Summary */}
-        <div className="lg:col-span-4 sticky top-24 space-y-4">
-          <div className="rounded-2xl bg-slate-900 text-white p-6 border border-slate-800 shadow-xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <span className="text-xs font-bold uppercase tracking-widest text-hoooplaaa-gold-400">
-                Live Draft Estimate
-              </span>
-              <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                {step < 4 ? 'Preliminary' : 'Server Validated'}
-              </span>
+        {/* Sticky Midnight Forest Live Estimate Sidebar */}
+        <aside className="lg:col-span-4">
+          <div className="sticky top-24 border border-brand-gold/35 bg-brand-forest p-6 text-brand-platinum shadow-forest-card">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-softgold">
+              {pricingWindow.isLaunchActive ? '2026 Launch Estimate' : 'Standard Estimate'}
+            </p>
+
+            <div className="mt-2 flex items-baseline justify-between border-b border-brand-teal pb-4">
+              <AnimatedBdtCounter
+                amountMinor={quote ? quote.totalMinor : liveEstimate.effectiveTotal}
+                className="text-4xl font-bold text-brand-ivory"
+              />
+              {pricingWindow.isLaunchActive &&
+                liveEstimate.standardTotal > liveEstimate.effectiveTotal && (
+                  <span className="tabular-price text-xs text-brand-platinum/70">
+                    Std {formatBdt(liveEstimate.standardTotal)}
+                  </span>
+                )}
             </div>
 
-            <div>
-              <div className="text-3xl font-extrabold text-white">
-                ৳{draftEstimateTaka.toLocaleString('en-US')}
-              </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">
-                {locale === 'en'
-                  ? 'One-time investment • BDT'
-                  : 'এককালীন ইনভেস্টমেন্ট • বিডিটি'}
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs border-t border-slate-800 pt-3">
-              <div className="text-slate-400 font-semibold text-[11px] uppercase tracking-wider">
-                Current Selections:
-              </div>
-              {selectedPlatformSkus.map((sku) => {
-                const s = CANONICAL_SERVICES.find((srv) => srv.sku === sku);
-                return (
-                  <div key={sku} className="flex justify-between text-slate-300 text-[11px]">
-                    <span className="truncate pr-2">{s ? s.name : sku}</span>
-                    <span className="font-mono">
-                      ৳{s ? (s.basePriceMinor / 100).toLocaleString() : ''}
-                    </span>
-                  </div>
-                );
-              })}
-              {selectedAddonSkus.map((sku) => {
-                const s = CANONICAL_SERVICES.find((srv) => srv.sku === sku);
-                return (
-                  <div key={sku} className="flex justify-between text-slate-300 text-[11px]">
-                    <span className="truncate pr-2">{s ? s.name : sku}</span>
-                    <span className="font-mono">
-                      ৳{s ? (s.basePriceMinor / 100).toLocaleString() : ''}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-800/80 border border-slate-700/60 text-[11px] text-slate-300 space-y-1">
-              <div className="flex items-center gap-1.5 font-bold text-hoooplaaa-gold-400">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Zero Sales Call Friction</span>
-              </div>
-              <p className="text-slate-400 leading-relaxed">
-                Prices and eligibility rules are deterministic. You will never be asked for raw passwords.
+            <div className="mt-4">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-brand-platinum/70">
+                Selected Items ({liveEstimate.items.length})
               </p>
+
+              {liveEstimate.items.length === 0 ? (
+                <p className="mt-2 text-xs text-brand-platinum/65">
+                  No services selected yet. Choose bundles, tiers, or core services in Step 2.
+                </p>
+              ) : (
+                <ul className="mt-3 max-h-72 space-y-2.5 overflow-y-auto pr-1 text-xs">
+                  {liveEstimate.items.map((item) => (
+                    <li
+                      key={item.sku}
+                      className="flex items-start justify-between gap-2 border-b border-brand-teal/70 pb-2"
+                    >
+                      <div>
+                        <span className="font-semibold text-brand-softgold">{item.sku}</span>{' '}
+                        <span className="text-brand-ivory">{item.name}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="tabular-price font-semibold text-brand-ivory">
+                          {formatBdt(getEffectivePriceMinor(item))}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${item.sku}`}
+                          onClick={() => {
+                            setSelectedPrimarySkus((p) => p.filter((s) => s !== item.sku));
+                            setSelectedAddonSkus((a) => a.filter((s) => s !== item.sku));
+                          }}
+                          className="text-brand-platinum/55 hover:text-brand-gold"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-5 space-y-2 border-t border-brand-teal pt-4 text-[11px] leading-relaxed text-brand-platinum/75">
+              <div className="flex items-start gap-2">
+                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-gold" />
+                <span>
+                  Final checkout totals are always recalculated and signed server-side via{' '}
+                  <code>/api/quote</code>.
+                </span>
+              </div>
+              <p>{BRAND_V3.commercialWindow.standardNoteEn}</p>
             </div>
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );

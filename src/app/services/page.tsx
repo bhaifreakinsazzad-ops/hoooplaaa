@@ -1,11 +1,16 @@
-import { Metadata } from 'next';
+import React, { Suspense } from 'react';
 import { ServicesCatalogClient } from '@/components/services/ServicesCatalogClient';
 
-export const metadata: Metadata = {
-  title: 'HOOOPLAAA — Approved Services',
-  description: 'Explore fixed-price digital infrastructure services offered by HOOOPLAAA.',
-};
-
 export default function ServicesPage() {
-  return <ServicesCatalogClient />;
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-7xl px-4 py-16 text-sm text-brand-muted">
+          Loading HOOOPLAAA v3.0 service catalog...
+        </div>
+      }
+    >
+      <ServicesCatalogClient />
+    </Suspense>
+  );
 }

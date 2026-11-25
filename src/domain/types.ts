@@ -1,8 +1,46 @@
-// HOOOPLAAA INCORPORATED — CORE DOMAIN TYPES
+// HOOOPLAAA INCORPORATED — CORE DOMAIN TYPES (Brand Book v3.0 & Pricing Rev 4.4)
 // Currency representation: all monetary amounts are stored in minor units (Poisha: 1 BDT = 100 Poisha)
 
 export type Currency = 'BDT';
-export type BillingPeriod = 'one_time' | 'weekly' | 'monthly' | 'quote';
+export type BillingPeriod = 'one_time' | 'weekly' | 'monthly' | 'variable' | 'quote';
+
+export type CatalogItemKind =
+  | 'core_service'
+  | 'variant'
+  | 'bundle'
+  | 'specialized_addon'
+  | 'legacy_compat';
+
+export type PricingTier = 'launch_2026' | 'standard_list';
+
+export interface PricingWindowState {
+  activeTier: PricingTier;
+  isLaunchActive: boolean;
+  labelEn: string;
+  labelBn: string;
+  windowStartIso: string; // 2026-11-20T00:00:00+06:00
+  windowEndIso: string;   // 2026-12-31T23:59:59+06:00
+  timezone: 'Asia/Dhaka';
+  evaluatedAtIso: string;
+}
+
+export interface PartnerBoundary {
+  brand: string;
+  brandBn: string;
+  role: 'owned' | 'partner';
+  owns: string;
+  ownsBn: string;
+  note?: string;
+}
+
+export interface SubscriptionRenewalNotice {
+  sku: string;
+  name: string;
+  launchFirstMonthMinor: number;
+  standardMonthlyMinor: number;
+  noticeEn: string;
+  noticeBn: string;
+}
 
 export type PublicationStatus =
   | 'draft'
@@ -25,8 +63,11 @@ export type UserRole =
 export interface ServiceCategory {
   id: string;
   slug: string;
+  code?: string;
   name: string;
   nameBn: string;
+  summary?: string;
+  summaryBn?: string;
   displayOrder: number;
 }
 
@@ -39,7 +80,10 @@ export interface Service {
   nameBn: string;
   shortDescription: string;
   shortDescriptionBn: string;
-  basePriceMinor: number; // in Poisha
+  basePriceMinor: number; // Effective / legacy base price in Poisha
+  regularPriceMinor?: number; // Planned Standard List Rate in Poisha (v3.0 Rev 4.4)
+  launchPriceMinor?: number; // 2026 Launch Offer price in Poisha (20 Nov–31 Dec 2026 Asia/Dhaka)
+  isFromPrice?: boolean; // True for variable/scoped starting prices (e.g., L01-L04, A01, V01)
   billingPeriod: BillingPeriod;
   publicationStatus: PublicationStatus;
   checkoutEnabled: boolean; // default false per security rules
@@ -50,6 +94,22 @@ export interface Service {
   prerequisites: string[];
   ownerConfirmedPrice: boolean;
   provenance: string;
+  // v3.0 Canonical Governance & Catalog Metadata
+  catalogKind?: CatalogItemKind;
+  parentSku?: string;
+  bundleComponents?: string[];
+  aliasOf?: string | null;
+  offerPolicy?: string;
+  offerPolicyBn?: string;
+  allowance?: string;
+  allowanceBn?: string;
+  scopeEn?: string;
+  scopeBn?: string;
+  deliverableEn?: string;
+  deliverableBn?: string;
+  exclusionsBn?: string[];
+  addonGroup?: string;
+  isLegacyCompat?: boolean;
 }
 
 export interface BusinessProfile {
@@ -90,9 +150,12 @@ export interface QuoteItem {
   name: string;
   nameBn: string;
   unitPriceMinor: number;
+  regularUnitPriceMinor?: number;
+  pricingTier?: PricingTier;
   quantity: number;
   lineTotalMinor: number;
   billingPeriod: BillingPeriod;
+  offerPolicy?: string;
   inclusionsSnapshot: string[];
   exclusionsSnapshot: string[];
   deliveryTarget: string;
@@ -108,10 +171,16 @@ export interface QuoteSnapshot {
   termsHash: string;
   items: QuoteItem[];
   subtotalMinor: number;
+  standardSubtotalMinor?: number;
+  launchSavingsMinor?: number;
   discountMinor: number;
   taxMinor: number;
   totalMinor: number;
   currency: Currency;
+  pricingTierApplied?: PricingTier;
+  pricingWindow?: PricingWindowState;
+  deduplicationNotes?: string[];
+  subscriptionRenewalNotices?: SubscriptionRenewalNotice[];
   eligibility: EligibilityEvaluation;
   status: 'draft' | 'priced' | 'accepted' | 'expired' | 'requires_manual_scope';
   clientIp?: string;

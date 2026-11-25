@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { CANONICAL_SERVICES } from '@/domain/catalog';
+import { V3_STOREFRONT_CATALOG } from '@/domain/catalog';
 import QaDeliveryPanel from '@/components/admin/QaDeliveryPanel';
 import { Order, AuditRequest, Service } from '@/domain/types';
 import {
@@ -27,7 +27,7 @@ export default function AdminPage() {
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [audits, setAudits] = useState<AuditRequest[]>([]);
-  const [catalog, setCatalog] = useState<Service[]>(CANONICAL_SERVICES);
+  const [catalog, setCatalog] = useState<Service[]>(V3_STOREFRONT_CATALOG);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<{ status: number; message: string } | null>(null);
 

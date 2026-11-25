@@ -2,203 +2,126 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useApp } from '../providers/AppProviders';
-import {
-  ShieldCheck,
-  Globe,
-  Menu,
-  X,
-  Layers,
-  Sparkles,
-  UserCheck,
-  Lock,
-  ArrowRight,
-} from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { useApp } from '@/components/providers/AppProviders';
+import { useT } from '@/lib/i18n';
+import { Menu, X } from 'lucide-react';
 
 export function Header() {
   const { locale, setLocale } = useApp();
+  const { t } = useT();
+  const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  const navItems = [
+    { href: '/services', label: t('navServices') },
+    { href: '/packages', label: t('navPackages') },
+    { href: '/build', label: t('navBuild') },
+    { href: '/audit', label: t('navAudit') },
+    { href: '/how-it-works', label: t('navHowItWorks') },
+  ];
+
+  const isActive = (href: string) =>
+    pathname === href || (href !== '/' && pathname?.startsWith(`${href}/`));
+
   return (
-    <header className="sticky top-0 z-50 backdrop-blur-md bg-opacity-95 transition-colors duration-200 border-b border-hoooplaaa-navy-700/30 bg-hoooplaaa-navy-950 text-white">
-      {/* Top micro bar for trust, credentials & locale */}
-      <div className="bg-hoooplaaa-navy-900/90 border-b border-hoooplaaa-navy-800 text-xs py-1.5 px-4 sm:px-6">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-slate-300">
-            <span className="inline-flex items-center gap-1 font-semibold text-hoooplaaa-gold-400">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              HOOOPLAAA INCORPORATED
-            </span>
-            <span className="hidden sm:inline text-slate-500">•</span>
-            <span className="hidden sm:inline text-slate-400">
-              {locale === 'en'
-                ? 'Attract. Connect. Convert. Grow.'
-                : 'অ্যাট্রাক্ট • কানেক্ট • কনভার্ট • গ্রো'}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] text-emerald-400 font-medium hidden md:inline-flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              Direct Commerce Engine Online
-            </span>
-
-            {/* Locale Switcher */}
-            <button
-              onClick={() => setLocale(locale === 'en' ? 'bn' : 'en')}
-              className="flex items-center gap-1 text-slate-300 hover:text-white text-xs px-2.5 py-0.5 rounded bg-hoooplaaa-navy-800 border border-hoooplaaa-navy-700 hover:border-hoooplaaa-gold-500/50 transition"
-              aria-label="Switch Language"
-            >
-              <Globe className="w-3 h-3 text-hoooplaaa-gold-400" />
-              <span>{locale === 'en' ? 'বাংলা' : 'English'}</span>
-            </button>
-
-            {/* Admin shortcut */}
-            <Link
-              href="/admin"
-              className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 transition"
-            >
-              <Lock className="w-3 h-3 text-hoooplaaa-gold-500" />
-              <span>Admin Desk</span>
-            </Link>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Navigation Bar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
-        {/* Brand Logo */}
-        <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-hoooplaaa-gold-400 via-hoooplaaa-gold-500 to-hoooplaaa-gold-600 flex items-center justify-center font-black text-hoooplaaa-navy-950 text-xl tracking-tighter shadow-gold-glow group-hover:scale-105 transition-transform">
-            H
-          </div>
-          <div className="flex flex-col">
-            <span className="font-extrabold text-lg tracking-wider text-white group-hover:text-hoooplaaa-gold-300 transition">
-              HOOOPLAAA
-            </span>
-            <span className="text-[9px] uppercase tracking-widest text-hoooplaaa-gold-400/80 -mt-1 font-semibold">
-              INCORPORATED
-            </span>
-          </div>
+    <header className="sticky top-0 z-50 border-b border-brand-gold/20 bg-brand-forest text-brand-platinum">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        {/* Zone 1: Clean single-line brand wordmark */}
+        <Link
+          href="/"
+          className="shrink-0 whitespace-nowrap font-serif text-lg font-semibold tracking-[0.18em] text-brand-ivory transition-colors hover:text-brand-softgold sm:text-xl"
+          aria-label="HOOOPLAAA INCORPORATED Home"
+        >
+          HOOOPLAAA
         </Link>
 
-        {/* Desktop Navigation Links */}
-        <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
-          <Link
-            href="/services"
-            className="text-slate-200 hover:text-hoooplaaa-gold-300 transition"
-          >
-            {locale === 'en' ? 'Services' : 'সার্ভিসসমূহ'}
-          </Link>
-          <Link
-            href="/packages"
-            className="text-slate-200 hover:text-hoooplaaa-gold-300 transition flex items-center gap-1.5"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-hoooplaaa-gold-400" />
-            <span>{locale === 'en' ? '3-Platform Bundle' : '৩-প্ল্যাটফর্ম বান্ডেল'}</span>
-          </Link>
-          <Link
-            href="/build"
-            className="text-slate-200 hover:text-hoooplaaa-gold-300 transition flex items-center gap-1.5"
-          >
-            <Layers className="w-3.5 h-3.5 text-blue-400" />
-            <span>{locale === 'en' ? 'Custom Builder' : 'প্যাকেজ বিল্ডার'}</span>
-          </Link>
-          <Link
-            href="/audit"
-            className="text-slate-200 hover:text-hoooplaaa-gold-300 transition"
-          >
-            {locale === 'en' ? 'Free Audit' : 'ফ্রি অডিট'}
-          </Link>
-          <Link
-            href="/how-it-works"
-            className="text-slate-300 hover:text-white transition"
-          >
-            {locale === 'en' ? 'How It Works' : 'কাজের প্রক্রিয়া'}
-          </Link>
+        {/* Zone 2: Single-row editorial text navigation */}
+        <nav aria-label="Primary" className="hidden lg:flex items-center gap-6">
+          {navItems.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`whitespace-nowrap text-[13px] font-medium tracking-wide transition-colors ${
+                isActive(item.href)
+                  ? 'text-brand-gold'
+                  : 'text-brand-platinum/85 hover:text-brand-ivory'
+              }`}
+            >
+              {item.label}
+            </Link>
+          ))}
         </nav>
 
-        {/* Action Buttons */}
-        <div className="hidden sm:flex items-center gap-3">
+        {/* Zone 3: Compact EN/BN toggle + Workspace + 1 primary CTA */}
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setLocale(locale === 'en' ? 'bn' : 'en')}
+            aria-label={locale === 'en' ? 'Switch language to Bangla' : 'Switch language to English'}
+            className="whitespace-nowrap border border-brand-gold/30 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-softgold transition-colors hover:border-brand-gold hover:text-brand-ivory"
+          >
+            {locale === 'en' ? 'BN' : 'EN'}
+          </button>
+
           <Link
             href="/dashboard"
-            className="px-3.5 py-2 rounded-xl border border-slate-700 text-xs font-semibold text-slate-200 hover:bg-hoooplaaa-navy-800 transition flex items-center gap-1.5"
+            className="hidden sm:inline-block whitespace-nowrap text-[13px] font-medium text-brand-platinum/85 transition-colors hover:text-brand-ivory"
           >
-            <UserCheck className="w-3.5 h-3.5 text-hoooplaaa-gold-400" />
-            <span>{locale === 'en' ? 'Client Workspace' : 'ক্লায়েন্ট পোর্টাল'}</span>
+            {t('navWorkspace')}
           </Link>
+
           <Link
             href="/build"
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-hoooplaaa-gold-500 to-hoooplaaa-gold-600 hover:from-hoooplaaa-gold-400 hover:to-hoooplaaa-gold-500 text-hoooplaaa-navy-950 font-bold text-xs uppercase tracking-wider shadow-gold-glow transition flex items-center gap-1.5"
+            className="hidden sm:inline-flex whitespace-nowrap items-center justify-center bg-brand-gold px-4 py-2 text-[12px] font-semibold uppercase tracking-wider text-brand-forest transition-colors hover:bg-brand-softgold"
           >
-            <span>{locale === 'en' ? 'Build Package' : 'প্যাকেজ শুরু করুন'}</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            {t('navBuild')}
           </Link>
-        </div>
 
-        {/* Mobile menu button */}
-        <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="md:hidden p-2 text-slate-300 hover:text-white"
-          aria-label="Toggle Mobile Navigation"
-        >
-          {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-        </button>
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((prev) => !prev)}
+            className="inline-flex items-center justify-center border border-brand-gold/30 p-2 text-brand-ivory lg:hidden"
+            aria-label="Toggle navigation menu"
+            aria-expanded={mobileMenuOpen}
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
       </div>
 
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-hoooplaaa-navy-900 border-b border-hoooplaaa-navy-800 px-4 py-4 space-y-3">
-          <Link
-            href="/services"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 text-sm text-slate-200 font-medium hover:text-hoooplaaa-gold-300"
-          >
-            {locale === 'en' ? 'Services' : 'সার্ভিসসমূহ'}
-          </Link>
-          <Link
-            href="/packages"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 text-sm text-slate-200 font-medium hover:text-hoooplaaa-gold-300"
-          >
-            {locale === 'en' ? '3-Platform Bundle (৳3,000)' : '৩-প্ল্যাটফর্ম বান্ডেল (৳৩,০০০)'}
-          </Link>
-          <Link
-            href="/build"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 text-sm text-slate-200 font-medium hover:text-hoooplaaa-gold-300"
-          >
-            {locale === 'en' ? 'Guided Package Builder' : 'গাইডেড প্যাকেজ বিল্ডার'}
-          </Link>
-          <Link
-            href="/audit"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 text-sm text-slate-200 font-medium hover:text-hoooplaaa-gold-300"
-          >
-            {locale === 'en' ? 'Free Initial Business Audit' : 'ফ্রি বিজনেস অডিট'}
-          </Link>
-          <Link
-            href="/how-it-works"
-            onClick={() => setMobileMenuOpen(false)}
-            className="block py-2 text-sm text-slate-200 font-medium hover:text-hoooplaaa-gold-300"
-          >
-            {locale === 'en' ? 'How It Works' : 'কাজের প্রক্রিয়া'}
-          </Link>
-          <div className="pt-3 border-t border-slate-800 flex flex-col gap-2">
+        <div className="border-t border-brand-gold/20 bg-brand-forest px-4 pb-5 pt-3 lg:hidden">
+          <div className="flex flex-col space-y-1">
+            {navItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => setMobileMenuOpen(false)}
+                className={`py-2.5 text-sm font-medium border-b border-brand-teal/60 ${
+                  isActive(item.href) ? 'text-brand-gold' : 'text-brand-platinum'
+                }`}
+              >
+                {item.label}
+              </Link>
+            ))}
             <Link
               href="/dashboard"
               onClick={() => setMobileMenuOpen(false)}
-              className="w-full text-center py-2 text-xs font-semibold rounded-lg border border-slate-700 text-slate-200"
+              className="py-2.5 text-sm font-medium text-brand-platinum border-b border-brand-teal/60"
             >
-              {locale === 'en' ? 'Client Workspace' : 'ক্লায়েন্ট পোর্টাল'}
+              {t('navWorkspace')}
             </Link>
-            <Link
-              href="/build"
-              onClick={() => setMobileMenuOpen(false)}
-              className="w-full text-center py-2.5 text-xs font-bold rounded-lg bg-hoooplaaa-gold-500 text-hoooplaaa-navy-950 uppercase tracking-wider"
-            >
-              {locale === 'en' ? 'Build Package Online' : 'প্যাকেজ শুরু করুন'}
-            </Link>
+            <div className="pt-3">
+              <Link
+                href="/build"
+                onClick={() => setMobileMenuOpen(false)}
+                className="block w-full bg-brand-gold py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-brand-forest"
+              >
+                {t('navBuild')}
+              </Link>
+            </div>
           </div>
         </div>
       )}

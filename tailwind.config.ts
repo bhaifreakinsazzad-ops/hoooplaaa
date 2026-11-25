@@ -10,40 +10,55 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        brand: {
+          forest: '#021B16',    // Midnight Forest — Hero, Header, Footer, Dark Luxury Base
+          teal: '#003D3A',      // Deep Teal — Layered dark panels & gradient anchor
+          emerald: '#0A7F5A',   // Emerald Teal — Growth accent & active highlights
+          gold: '#D4AF37',      // Champagne Gold — Primary CTA, hairline rules, precision accents
+          softgold: '#E6BE73',  // Soft Gold — Hover & curved accent highlights
+          platinum: '#E8E8E8',  // Platinum Silver — Readable neutral on dark surfaces
+          ivory: '#F7F3E8',     // Ivory — Accessible long-form light canvas
+          ink: '#163A31',       // Evergreen Ink — Primary text on pale/Ivory surfaces
+          muted: '#48635A',     // Muted Evergreen — Secondary copy on Ivory
+          hairline: '#DDD5C3',  // Warm Ivory Hairline — Crisp card & section dividers
+        },
+        // Backward-compatible semantic aliases harmonized to Brand Book v3.0
         hoooplaaa: {
           navy: {
-            950: '#071525', // Midnight Abyss
-            900: '#0B1A2A', // Foundational Navy
-            800: '#10283E', // Surface / Card Panel
-            700: '#1B3654', // Border / Muted Stroke
-            600: '#2A4D73', // Secondary accent
+            950: '#021B16',
+            900: '#05241E',
+            800: '#003D3A',
+            700: '#104F48',
+            600: '#0A7F5A',
           },
           gold: {
-            600: '#B8923E', // Deep gold
-            500: '#D9B45E', // Primary Muted Gold
-            400: '#E6C678', // Hover gold
-            300: '#F4D58D', // Pale Gold
-            100: '#FDF8EC', // Tinted gold highlight
+            600: '#B59028',
+            500: '#D4AF37',
+            400: '#E6BE73',
+            300: '#F0D599',
+            100: '#F7F3E8',
           },
           canvas: {
-            light: '#F7F8FA', // Light canvas
-            cream: '#FFFCF5', // Warm luxury cream
-            dark: '#071525',  // Master dark canvas
+            light: '#F7F3E8',
+            cream: '#FBF9F3',
+            dark: '#021B16',
           },
           ink: {
-            primary: '#102033', // Deep slate body
-            secondary: '#4A5B70', // Muted subtitle
-            tertiary: '#7C8BA0', // Placeholder
+            primary: '#163A31',
+            secondary: '#48635A',
+            tertiary: '#70877F',
           },
         },
       },
       fontFamily: {
-        sans: ['Inter', 'Manrope', 'sans-serif'],
-        bengali: ['Hind Siliguri', 'Noto Sans Bengali', 'sans-serif'],
+        serif: ['var(--font-playfair)', 'Georgia', 'serif'],
+        sans: ['var(--font-montserrat)', 'var(--font-bengali)', 'system-ui', 'sans-serif'],
+        bengali: ['var(--font-bengali)', 'var(--font-montserrat)', 'sans-serif'],
       },
       boxShadow: {
-        'gold-glow': '0 0 20px -3px rgba(217, 180, 94, 0.25)',
-        'navy-card': '0 10px 30px -5px rgba(7, 21, 37, 0.3)',
+        'gold-glow': '0 10px 30px -10px rgba(212, 175, 55, 0.35)',
+        'forest-card': '0 18px 42px -18px rgba(2, 27, 22, 0.35)',
+        'ivory-card': '0 1px 2px rgba(22, 58, 49, 0.05), 0 10px 26px -18px rgba(22, 58, 49, 0.16)',
       },
     },
   },

@@ -1,0 +1,834 @@
+{
+  "document_title": "HOOOPLAAA INCORPORATED — OFFICIAL BRAND BOOK & KNOWLEDGE BASE",
+  "version": "3.0",
+  "date": "2026-11-21",
+  "status": "Owner-selected official visual reference system and canonical service/pricing data. Artwork/legal claims subject to validation; not a certification of registered marks, market rank or operating performance.",
+  "logo_file": "HOOOPLAAA_Official_Landscape_Logo_v3.0.png",
+  "logo_status": "Owner-selected new landscape platinum/gold/emerald emblem; square matching emblem available. Files preserved pixel-for-pixel as original PNG references.",
+  "legal_registration_status": "not verified",
+  "trademark_status": "not verified; visual asset contains ®, requires clearance before public use as registration claim",
+  "name": {
+    "primary": "HOOOPLAAA INCORPORATED",
+    "display": "Hoooplaaa",
+    "avoid": [
+      "Hooplaa",
+      "HOOOPLA",
+      "HOOOPLAAA Group as legal parent without evidence"
+    ]
+  },
+  "positioning": "Premium digital marketing, performance growth, audience intelligence and managed digital support",
+  "primary_markers": [
+    "Marketing",
+    "Sales",
+    "Growth"
+  ],
+  "pillars": [
+    {
+      "name": "Marketing",
+      "meaning": "Visibility"
+    },
+    {
+      "name": "Sales",
+      "meaning": "Conversion"
+    },
+    {
+      "name": "Growth",
+      "meaning": "Scale"
+    }
+  ],
+  "logo_phrase": "Marketing • Sales • Growth",
+  "supporting_line": "Attract. Connect. Convert. Grow.",
+  "vision": "To be a trusted, globally relevant growth partner for ambitious businesses.",
+  "mission": "Make specialist-led marketing, customer acquisition and measurement easier to access, organize and act on through clear, human-supervised services.",
+  "promise": "Clarity in scope. Professional execution. Measurable learning. No unsupported outcome guarantees.",
+  "values": [
+    "Clarity",
+    "Accountability",
+    "Evidence",
+    "Craft",
+    "Respect for client ownership",
+    "Continuous improvement"
+  ],
+  "audiences": [
+    "Bangladesh SMEs and local service businesses",
+    "Founders and emerging brands",
+    "Online sellers / F-commerce and e-commerce operators",
+    "B2B services and growth teams",
+    "Global remote-service clients subject to scope and support capacity"
+  ],
+  "color_tokens": [
+    {
+      "name": "Midnight Forest",
+      "hex": "#021B16",
+      "role": "Background / quiet premium",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Deep Teal",
+      "hex": "#003D3A",
+      "role": "Primary depth",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Emerald Teal",
+      "hex": "#0A7F5A",
+      "role": "Growth accent",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Champagne Gold",
+      "hex": "#D4AF37",
+      "role": "Luxury accent",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Soft Gold",
+      "hex": "#E6BE73",
+      "role": "Secondary highlights",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Platinum Silver",
+      "hex": "#E8E8E8",
+      "role": "Premium neutral",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Ivory",
+      "hex": "#F7F3E8",
+      "role": "Document base",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    },
+    {
+      "name": "Evergreen Ink",
+      "hex": "#163A31",
+      "role": "Text on pale surfaces",
+      "source_status": "recommended from selected visual references; not spectrophotometer / Pantone specification"
+    }
+  ],
+  "type_system": {
+    "logo": "Bespoke metallic raster wordmark. Do not retype or mimic as live typography.",
+    "headline": "Playfair Display (recommended if properly licensed/installed); fallback Noto Serif",
+    "body": "Montserrat (recommended if properly licensed/installed); fallback Noto Sans",
+    "bengali": "Noto Sans Bengali, verified font availability in packaged documents",
+    "system": "Display serif only for major headings; sans-serif for service data, pricing, and operational content."
+  },
+  "service_categories": [
+    "Business Setup & Digital Presence",
+    "Digital Advertising & Marketing",
+    "HOOOPLAAA VA+ Managed Support",
+    "Leads, CRM & Conversion",
+    "Audience Intelligence & Growth",
+    "Marketing Tracking & Analytics"
+  ],
+  "service_counts": {
+    "core": 26,
+    "variant_price_rows": 6,
+    "bundles": 3,
+    "specialized_addon_rows": 22,
+    "add_on_aliases": 1
+  },
+  "price_policy": {
+    "source": "Final conversation commercial baseline v4.4",
+    "currency": "BDT",
+    "promotional_start": "2026-11-20",
+    "promotional_end": "2026-12-31",
+    "time_zone": "Asia/Dhaka",
+    "subscription_intro": "first month only",
+    "standard_prices": "planned Standard List Rates, not historical sale evidence"
+  },
+  "services": [
+    {
+      "id": "B01",
+      "category": "Business Setup & Digital Presence",
+      "name": "Meta Business Setup",
+      "regular_bdt": 3500,
+      "launch_bdt": 1500,
+      "description_bn": "Meta-তে ব্যবসার অফিসিয়াল ডিজিটাল উপস্থিতি এবং উপযুক্ত Business Portfolio-এর প্রাথমিক বিন্যাস।",
+      "scope_bn": "একটি ব্যবসা: প্রয়োজনীয় business asset/access configuration, client-approved information ও handover।",
+      "deliverable_bn": "সেটআপ সারাংশ, asset/access checklist ও handover note।",
+      "exclusions_bn": "নতুন বিজ্ঞাপন ক্রিয়েটিভ, বিজ্ঞাপন চালানো, অ্যাকাউন্ট পুনরুদ্ধার, ভেরিফিকেশন নিশ্চিতকরণ নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "B02",
+      "category": "Business Setup & Digital Presence",
+      "name": "Google Business Profile Setup",
+      "regular_bdt": 3500,
+      "launch_bdt": 1500,
+      "description_bn": "Google Search এবং Maps-এ যোগ্য ব্যবসার একটি সঠিক Business Profile তৈরি/সাজানো।",
+      "scope_bn": "একটি eligible business profile, core business details ও verification guidance।",
+      "deliverable_bn": "Profile configuration summary, verification steps ও handover।",
+      "exclusions_bn": "Search ranking, Google verification approval বা ongoing Local SEO নিশ্চিত নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "B03",
+      "category": "Business Setup & Digital Presence",
+      "name": "LinkedIn Business Setup",
+      "regular_bdt": 3500,
+      "launch_bdt": 1500,
+      "description_bn": "B2B ব্র্যান্ড উপস্থিতির জন্য একটি LinkedIn Company Page প্রতিষ্ঠা।",
+      "scope_bn": "একটি Company Page, ব্যবসায়িক তথ্য, প্রাথমিক access ও client-provided approved brand assets।",
+      "deliverable_bn": "Configured company page ও admin handover।",
+      "exclusions_bn": "গ্রাফিক ডিজাইন, prospecting, ongoing posting বা LinkedIn Ads অন্তর্ভুক্ত নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "B04",
+      "category": "Business Setup & Digital Presence",
+      "name": "Professional Business Audit",
+      "regular_bdt": 2500,
+      "launch_bdt": 1490,
+      "description_bn": "ব্যবসার বর্তমান ডিজিটাল উপস্থিতি ও মার্কেটিং প্রস্তুতির পেশাদার প্রাথমিক মূল্যায়ন।",
+      "scope_bn": "প্রোফাইল, enquiry path, গুরুত্বপূর্ণ ঘাটতি এবং growth-readiness review।",
+      "deliverable_bn": "সংক্ষিপ্ত written findings, অগ্রাধিকারভিত্তিক উন্নয়ন সুপারিশ।",
+      "exclusions_bn": "ফুল মার্কেট রিসার্চ, প্রকৃত implementation ও revenue guarantee নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "A01",
+      "category": "Digital Advertising & Marketing",
+      "name": "Digital Advertising & Campaign Management",
+      "regular_bdt": 7900,
+      "launch_bdt": 4790,
+      "description_bn": "Meta, Google ও LinkedIn-এর উপযুক্ত বিজ্ঞাপন প্ল্যাটফর্মে পরিকল্পনা, সেটআপ ও পারফরম্যান্স ব্যবস্থাপনা।",
+      "scope_bn": "Strategy & Setup (one-time) অথবা limited Ongoing Campaign Management (monthly); ক্লায়েন্ট লক্ষ্য, অনুমোদিত অ্যাকাউন্ট ও media budget অনুযায়ী।",
+      "deliverable_bn": "Campaign strategy/configuration note অথবা monthly optimization & reporting summary।",
+      "exclusions_bn": "Media spend, নতুন ডিজাইন, অসীম ক্যাম্পেইন ও guaranteed sales/ROAS নয়।",
+      "billing": "variable"
+    },
+    {
+      "id": "V01",
+      "category": "HOOOPLAAA VA+ Managed Support",
+      "name": "HOOOPLAAA VA+ | Managed Digital Support",
+      "regular_bdt": 2490,
+      "launch_bdt": 990,
+      "description_bn": "Human-Led, Expert-Backed, AI-Assisted—সীমিত মানবিক সমর্থন, shared specialist guidance এবং অনুমোদিত AI-সহায়তায় দৈনন্দিন ডিজিটাল অপারেশন।",
+      "scope_bn": "Presence, Growth, Pro, Expert—চারটি স্তর; প্রতিটিতে যোগাযোগ, কাজের পরিমাণ, প্রোফাইল ও support allocation চুক্তিতে নির্ধারিত।",
+      "deliverable_bn": "স্কোপভিত্তিক scheduling/communication/lead/CRM activity log এবং service summary।",
+      "exclusions_bn": "Dedicated full-time VA, unlimited communication, custom AI software, graphic design বা 24/7 support নয়।",
+      "billing": "monthly"
+    },
+    {
+      "id": "L01",
+      "category": "Leads, CRM & Conversion",
+      "name": "Targeted Lead Generation",
+      "regular_bdt": 11900,
+      "launch_bdt": 6790,
+      "description_bn": "নির্ধারিত লক্ষ্যগ্রাহক এবং বাজারের জন্য নতুন সম্ভাব্য লিড সংগ্রহ ও সরবরাহ।",
+      "scope_bn": "একটি নির্ধারিত market এবং acquisition method, client-approved criteria; media spend পৃথক।",
+      "deliverable_bn": "Agreed qualification criteria-ভিত্তিক lead delivery ও summary।",
+      "exclusions_bn": "ক্লোজড সেলস, নির্দিষ্ট ROI, অনুমোদনহীন স্ক্র্যাপিং ও ad spend নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "L02",
+      "category": "Leads, CRM & Conversion",
+      "name": "Ready-Made Lead Solutions",
+      "regular_bdt": 7900,
+      "launch_bdt": 3990,
+      "description_bn": "বৈধ উৎস থেকে সংগৃহীত, সম্মত বৈশিষ্ট্যের প্রস্তুত লিড ব্যাচ সরবরাহ।",
+      "scope_bn": "Agreed geography/industry, minimum permissible fields, freshness ও use rights।",
+      "deliverable_bn": "নির্ধারিত batch ও lawful-source/allowed-use brief।",
+      "exclusions_bn": "ক্রয়ের নিশ্চয়তা, unlicensed personal data, guaranteed conversion নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "L03",
+      "category": "Leads, CRM & Conversion",
+      "name": "Professional CRM Setup",
+      "regular_bdt": 8900,
+      "launch_bdt": 4990,
+      "description_bn": "বিদ্যমান CRM সিস্টেমের প্রাথমিক কনফিগারেশন ও একটি সেলস পাইপলাইন তৈরি।",
+      "scope_bn": "Existing CRM-এ base field, contact stages, one pipeline ও access handover।",
+      "deliverable_bn": "Configured CRM workspace, stage map এবং operating note।",
+      "exclusions_bn": "CRM license, custom CRM development, ongoing CRM operation নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "L04",
+      "category": "Leads, CRM & Conversion",
+      "name": "Conversion Rate Optimization (CRO)",
+      "regular_bdt": 12900,
+      "launch_bdt": 7490,
+      "description_bn": "গ্রাহক যাত্রার প্রতিবন্ধকতা শনাক্ত করে কনভার্শন উন্নয়নের অগ্রাধিকারভিত্তিক পরিকল্পনা।",
+      "scope_bn": "একটি বিদ্যমান journey/process review, actionable recommendations এবং scoped minor optimization।",
+      "deliverable_bn": "CRO review, prioritized action plan ও change summary।",
+      "exclusions_bn": "নতুন software sales funnel, deep experiment program, guaranteed uplift নয়।",
+      "billing": "one_time"
+    },
+    {
+      "id": "I01",
+      "category": "Audience Intelligence & Growth",
+      "name": "Audience Research & Insights",
+      "regular_bdt": 6900,
+      "launch_bdt": 3490,
+      "description_bn": "টার্গেট গ্রাহকের চাহিদা, আচরণ ও ক্রয়প্রবণতার প্রাসঙ্গিক তথ্য বিশ্লেষণ।",
+      "scope_bn": "একটি বাজারের audience research brief",
+      "deliverable_bn": "Findings ও insight summary",
+      "exclusions_bn": "দীর্ঘমেয়াদি primary survey নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I02",
+      "category": "Audience Intelligence & Growth",
+      "name": "Audience Segmentation & Targeting Strategy",
+      "regular_bdt": 4900,
+      "launch_bdt": 2790,
+      "description_bn": "বাজার/গ্রাহকভিত্তিকে কার্যকর শ্রেণিতে ভাগ করে প্রাধান্য নির্ধারণ।",
+      "scope_bn": "Agreed segments, prioritization and targeting logic",
+      "deliverable_bn": "Segment map ও recommendations",
+      "exclusions_bn": "Campaign execution নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I03",
+      "category": "Audience Intelligence & Growth",
+      "name": "Customer Persona Development",
+      "regular_bdt": 4500,
+      "launch_bdt": 2590,
+      "description_bn": "প্রমাণভিত্তিক গ্রাহক পার্সোনা ও সিদ্ধান্ত-প্রভাবক উপাদান নির্ধারণ।",
+      "scope_bn": "সীমিত persona set",
+      "deliverable_bn": "Persona cards ও objections/channel notes",
+      "exclusions_bn": "কল্পিত গবেষণা দাবি নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I04",
+      "category": "Audience Intelligence & Growth",
+      "name": "Audience Opportunity Mapping",
+      "regular_bdt": 5900,
+      "launch_bdt": 3490,
+      "description_bn": "সম্ভাবনাময় নতুন অডিয়েন্স সেগমেন্টের মূল্যায়ন।",
+      "scope_bn": "Opportunity comparison for one market",
+      "deliverable_bn": "Opportunity matrix ও priorities",
+      "exclusions_bn": "Demand guarantee নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I05",
+      "category": "Audience Intelligence & Growth",
+      "name": "Audience Insight Report",
+      "regular_bdt": 3900,
+      "launch_bdt": 2290,
+      "description_bn": "নির্দিষ্ট অডিয়েন্স প্রশ্নের উপর সংক্ষিপ্ত স্বাধীন রিপোর্ট।",
+      "scope_bn": "One scoped research question",
+      "deliverable_bn": "Insight report with key assumptions",
+      "exclusions_bn": "Unlimited monitoring নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I06",
+      "category": "Audience Intelligence & Growth",
+      "name": "Market & Competitor Intelligence",
+      "regular_bdt": 8900,
+      "launch_bdt": 4790,
+      "description_bn": "প্রতিযোগীদের অবস্থান, অফার এবং বাজারের সুযোগ বিশ্লেষণ।",
+      "scope_bn": "One agreed market & competitor set",
+      "deliverable_bn": "Competitive intelligence memo",
+      "exclusions_bn": "Confidential competitor information নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I07",
+      "category": "Audience Intelligence & Growth",
+      "name": "Competitor Benchmarking",
+      "regular_bdt": 5900,
+      "launch_bdt": 3490,
+      "description_bn": "নির্বাচিত প্রতিযোগীদের তুলনামূলক মূল্যায়ন।",
+      "scope_bn": "Agreed benchmark dimensions",
+      "deliverable_bn": "Competitor scorecard ও differentiation gap",
+      "exclusions_bn": "Real-time competitor monitoring নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I08",
+      "category": "Audience Intelligence & Growth",
+      "name": "Customer Journey Analysis",
+      "regular_bdt": 7900,
+      "launch_bdt": 4490,
+      "description_bn": "গ্রাহকের সচেতনতা থেকে সিদ্ধান্ত পর্যন্ত একটি যাত্রার বিশ্লেষণ।",
+      "scope_bn": "One customer journey",
+      "deliverable_bn": "Journey map ও friction notes",
+      "exclusions_bn": "Software funnel building নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I09",
+      "category": "Audience Intelligence & Growth",
+      "name": "Retargeting & Remarketing Strategy",
+      "regular_bdt": 4900,
+      "launch_bdt": 2890,
+      "description_bn": "আগ্রহ প্রকাশকারী ব্যবহারকারীদের পুনরায় পৌঁছানোর পরিকল্পনা।",
+      "scope_bn": "Eligibility and audience window strategy",
+      "deliverable_bn": "Retargeting plan",
+      "exclusions_bn": "Actual ad setup/paid media নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I10",
+      "category": "Audience Intelligence & Growth",
+      "name": "Marketing Performance & Growth Strategy",
+      "regular_bdt": 9900,
+      "launch_bdt": 5690,
+      "description_bn": "মার্কেটিং ডেটা ও কার্যক্রম থেকে কার্যকর গ্রোথ সিদ্ধান্ত তৈরি।",
+      "scope_bn": "Agreed channels, KPIs and market context",
+      "deliverable_bn": "Growth roadmap ও priority actions",
+      "exclusions_bn": "Sales guarantee নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "I11",
+      "category": "Audience Intelligence & Growth",
+      "name": "Growth Opportunity Assessment",
+      "regular_bdt": 6900,
+      "launch_bdt": 3890,
+      "description_bn": "নতুন গ্রোথ চ্যানেলের সুযোগ, সীমাবদ্ধতা ও সম্ভাবনার পর্যালোচনা।",
+      "scope_bn": "One business growth brief",
+      "deliverable_bn": "Prioritized opportunity assessment",
+      "exclusions_bn": "Financial return certification নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "T01",
+      "category": "Marketing Tracking & Analytics",
+      "name": "Meta Pixel & Conversion Tracking",
+      "regular_bdt": 3900,
+      "launch_bdt": 1690,
+      "description_bn": "সমর্থিত ওয়েবসাইটে প্রাথমিক Meta Pixel ও conversion event verification।",
+      "scope_bn": "One supported domain; basic browser-side events",
+      "deliverable_bn": "Pixel/event test note",
+      "exclusions_bn": "Custom CAPI/server build নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "T02",
+      "category": "Marketing Tracking & Analytics",
+      "name": "GA4 & Google Tag Manager Setup",
+      "regular_bdt": 6900,
+      "launch_bdt": 3690,
+      "description_bn": "একটি ওয়েব প্রপার্টির GA4 এবং GTM-এর প্রাথমিক পরিমাপ সেটআপ।",
+      "scope_bn": "One property, one container, standard events",
+      "deliverable_bn": "Tracking configuration summary",
+      "exclusions_bn": "Complex cross-domain tracking নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "T03",
+      "category": "Marketing Tracking & Analytics",
+      "name": "Standard Conversion API (CAPI) Integration",
+      "regular_bdt": 8900,
+      "launch_bdt": 4790,
+      "description_bn": "সাপোর্টেড native server-side event connection এবং basic event matching।",
+      "scope_bn": "One supported integration, basic dedup checks where applicable",
+      "deliverable_bn": "Native integration & test record",
+      "exclusions_bn": "Custom backend/API coding নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "T04",
+      "category": "Marketing Tracking & Analytics",
+      "name": "Marketing Analytics & Intelligence",
+      "regular_bdt": 7900,
+      "launch_bdt": 4490,
+      "description_bn": "নির্ধারিত KPI এবং মার্কেটিং ডেটার ভিত্তিতে স্বাধীন বিশ্লেষণ।",
+      "scope_bn": "One scoped analysis report",
+      "deliverable_bn": "Findings and prioritized insights",
+      "exclusions_bn": "Unlimited live dashboard নয়",
+      "billing": "one_time"
+    },
+    {
+      "id": "T05",
+      "category": "Marketing Tracking & Analytics",
+      "name": "Tracking Audit & Optimization",
+      "regular_bdt": 5900,
+      "launch_bdt": 3190,
+      "description_bn": "Tracking configuration, event accuracy এবং সাধারণ ত্রুটি নির্ণয়।",
+      "scope_bn": "One agreed technical scope; limited standard fixes",
+      "deliverable_bn": "Audit checklist, issue list ও next actions",
+      "exclusions_bn": "Unsupported platform redevelopment নয়",
+      "billing": "one_time"
+    }
+  ],
+  "variants": [
+    {
+      "parent": "A01",
+      "name": "Strategy & Setup",
+      "regular_bdt": 7900,
+      "launch_bdt": 4790,
+      "billing": "one_time",
+      "offer_policy": "eligible scoped campaign setup"
+    },
+    {
+      "parent": "A01",
+      "name": "Ongoing Campaign Management",
+      "regular_bdt": 11900,
+      "launch_bdt": 7490,
+      "billing": "monthly",
+      "offer_policy": "first month only"
+    },
+    {
+      "parent": "V01",
+      "name": "Presence",
+      "regular_bdt": 2490,
+      "launch_bdt": 990,
+      "billing": "monthly",
+      "offer_policy": "first month only",
+      "allowance": "1 profile / up to 4 client-supplied posts"
+    },
+    {
+      "parent": "V01",
+      "name": "Growth",
+      "regular_bdt": 4790,
+      "launch_bdt": 1990,
+      "billing": "monthly",
+      "offer_policy": "first month only",
+      "allowance": "2 profiles / up to 8 client-supplied posts"
+    },
+    {
+      "parent": "V01",
+      "name": "Pro",
+      "regular_bdt": 7490,
+      "launch_bdt": 3490,
+      "billing": "monthly",
+      "offer_policy": "first month only",
+      "allowance": "3 profiles / up to 12 posts; scoped lead/CRM help"
+    },
+    {
+      "parent": "V01",
+      "name": "Expert",
+      "regular_bdt": 12900,
+      "launch_bdt": 6190,
+      "billing": "monthly",
+      "offer_policy": "first month only",
+      "allowance": "4 profiles / up to 16 posts; priority coordination"
+    }
+  ],
+  "bundles": [
+    {
+      "id": "PK01",
+      "name": "Complete 3-Platform Business Setup",
+      "regular_bdt": 8900,
+      "launch_bdt": 3000,
+      "components": [
+        "B01",
+        "B02",
+        "B03"
+      ],
+      "scope": "Meta, Google Business Profile ও LinkedIn Business Setup-এর একটি shared client intake ও standard handover।"
+    },
+    {
+      "id": "PK02",
+      "name": "Growth Intelligence Package",
+      "regular_bdt": 19900,
+      "launch_bdt": 10990,
+      "components": [
+        "I01",
+        "I06",
+        "I10"
+      ],
+      "scope": "একটি ব্যবসা ও একটি বাজারে সমন্বিত audience, competitor ও growth strategy।"
+    },
+    {
+      "id": "PK03",
+      "name": "Tracking Essentials",
+      "regular_bdt": 9900,
+      "launch_bdt": 4590,
+      "components": [
+        "T01",
+        "T02"
+      ],
+      "scope": "সাপোর্টেড সাইটে basic Meta Pixel + GA4/GTM এবং initial verification।"
+    }
+  ],
+  "specialized": [
+    {
+      "id": "X01",
+      "category": "Advertising",
+      "name": "Advertising Strategy & Planning",
+      "regular_bdt": 4900,
+      "launch_bdt": 2890,
+      "scope_bn": "Campaign strategy brief; basic included planning হলে আলাদা চার্জ নয়।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X02",
+      "category": "Advertising",
+      "name": "Campaign Setup & Configuration",
+      "regular_bdt": 5900,
+      "launch_bdt": 3590,
+      "scope_bn": "মূল scope-এর বাইরে অতিরিক্ত campaign configuration।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X03",
+      "category": "Advertising",
+      "name": "Audience Targeting & Retargeting Configuration",
+      "regular_bdt": 3900,
+      "launch_bdt": 2490,
+      "scope_bn": "মূল campaign scope-এর বাইরে অতিরিক্ত targeting configuration।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X04",
+      "category": "Advertising",
+      "name": "Budget & Bid Optimization Review",
+      "regular_bdt": 3500,
+      "launch_bdt": 2190,
+      "scope_bn": "Standalone budget review; মাসিক management-এ অন্তর্ভুক্ত হলে চার্জ নয়।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X05",
+      "category": "Advertising",
+      "name": "Campaign Performance Management / month",
+      "regular_bdt": 11900,
+      "launch_bdt": 7490,
+      "scope_bn": "Monitoring, Optimization ও Reporting একসঙ্গে; ongoing management-এর বিকল্প নাম।",
+      "duplicate_of": "A01/Ongoing Campaign Management"
+    },
+    {
+      "id": "X06",
+      "category": "VA+",
+      "name": "Additional Social Profile Support / month",
+      "regular_bdt": 2490,
+      "launch_bdt": 1390,
+      "scope_bn": "প্যাকেজের বাইরে একটি অতিরিক্ত profile-এ সংজ্ঞায়িত support।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X07",
+      "category": "VA+",
+      "name": "Additional Publishing: 4 supplied posts",
+      "regular_bdt": 1990,
+      "launch_bdt": 1190,
+      "scope_bn": "ক্লায়েন্টের ৪টি approved ready post scheduling; creative তৈরি নয়।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X08",
+      "category": "VA+",
+      "name": "Community Engagement: up to 30 interactions",
+      "regular_bdt": 3490,
+      "launch_bdt": 1990,
+      "scope_bn": "অনুমোদিত response policy অনুযায়ী সীমিত engagement।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X09",
+      "category": "VA+",
+      "name": "Customer Communication: up to 25 responses",
+      "regular_bdt": 3990,
+      "launch_bdt": 2390,
+      "scope_bn": "অনুমোদিত client script-এ নির্দিষ্ট চ্যানেলে সীমিত উত্তর।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X10",
+      "category": "VA+",
+      "name": "Lead Handling: up to 20 leads",
+      "regular_bdt": 4490,
+      "launch_bdt": 2790,
+      "scope_bn": "নির্ধারিত লিডে status management ও follow-up support।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X11",
+      "category": "VA+",
+      "name": "CRM Administration: up to 50 record updates",
+      "regular_bdt": 3990,
+      "launch_bdt": 2490,
+      "scope_bn": "Existing CRM-এ সীমিত updates।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X12",
+      "category": "VA+",
+      "name": "Social Performance Insight Report",
+      "regular_bdt": 2490,
+      "launch_bdt": 1490,
+      "scope_bn": "প্যাকেজের বাইরে একটি সংক্ষিপ্ত independent report।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X13",
+      "category": "Leads & CRM",
+      "name": "Lead Quality Assessment & Validation",
+      "regular_bdt": 3490,
+      "launch_bdt": 1990,
+      "scope_bn": "সম্মত ছোট ব্যাচের data-format ও relevance review।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X14",
+      "category": "Leads & CRM",
+      "name": "Targeted Lead Segmentation",
+      "regular_bdt": 2990,
+      "launch_bdt": 1790,
+      "scope_bn": "বিদ্যমান বৈধ লিড ব্যাচকে নির্ধারিত গ্রুপে ভাগ।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X15",
+      "category": "Leads & CRM",
+      "name": "Lead Data Enrichment",
+      "regular_bdt": 4290,
+      "launch_bdt": 2590,
+      "scope_bn": "অনুমোদিত উৎস থেকে সীমিত তথ্য সমৃদ্ধ করা।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X16",
+      "category": "Leads & CRM",
+      "name": "CRM Data Migration & Organization",
+      "regular_bdt": 3990,
+      "launch_bdt": 2390,
+      "scope_bn": "সীমিত record import ও clean-up।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X17",
+      "category": "Leads & CRM",
+      "name": "Additional CRM Pipeline Configuration",
+      "regular_bdt": 4490,
+      "launch_bdt": 2690,
+      "scope_bn": "মূল setup-এর বাইরে আরেকটি pipeline।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X18",
+      "category": "Leads & CRM",
+      "name": "Conversion Performance Audit",
+      "regular_bdt": 5900,
+      "launch_bdt": 3490,
+      "scope_bn": "স্বতন্ত্র conversion audit; CRO scope-এর একই কাজ হলে duplicate fee নয়।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X19",
+      "category": "Tracking",
+      "name": "Additional Custom Event Tracking / event",
+      "regular_bdt": 2490,
+      "launch_bdt": 1390,
+      "scope_bn": "একটি অতিরিক্ত supported tracking event configuration।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X20",
+      "category": "Tracking",
+      "name": "Cross-Platform Analytics",
+      "regular_bdt": 6900,
+      "launch_bdt": 3990,
+      "scope_bn": "সম্মত channel-এর KPI comparison।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X21",
+      "category": "Tracking",
+      "name": "Additional Custom Performance Report",
+      "regular_bdt": 2490,
+      "launch_bdt": 1590,
+      "scope_bn": "বেসিক reporting-এর বাইরে নির্দিষ্ট KPI report।",
+      "duplicate_of": null
+    },
+    {
+      "id": "X22",
+      "category": "Tracking",
+      "name": "Tracking Troubleshooting: basic issue",
+      "regular_bdt": 2990,
+      "launch_bdt": 1690,
+      "scope_bn": "একটি standard issue-র diagnosis ও supported fix attempt।",
+      "duplicate_of": null
+    }
+  ],
+  "architecture": [
+    {
+      "brand": "HOOOPLAAA",
+      "owns": "Core premium digital marketing, VA support, lead supply, CRM configuration, audience intelligence, tracking & analytics"
+    },
+    {
+      "brand": "Freakin’s Studio",
+      "owns": "Graphic design, video/creative production, brand visuals, standalone media planning"
+    },
+    {
+      "brand": "NotRealEngine",
+      "owns": "Custom software, website/landing page code, AI development, custom CRM/portal, advanced backend automation"
+    },
+    {
+      "brand": "How To Keep It Simple (HTKIS)",
+      "owns": "SaaS products, subscriptions and licensing"
+    }
+  ],
+  "excluded_departments": [
+    "Affiliate & Partnership Marketing",
+    "Standalone AI & Marketing Automation",
+    "Software & SaaS products",
+    "Commerce & Payments",
+    "Partner-Delivered Solutions as owned offerings"
+  ],
+  "contact": {
+    "whatsapp": "+880 1778-307704",
+    "verification": "from prior 2026 project documentation; ownership and active availability not independently verified"
+  },
+  "official_logo_identity": {
+    "primary_landscape": "HOOOPLAAA_Official_Landscape_Logo_v3.0.png",
+    "primary_landscape_sha256": "f0465790fb9c2a82e6862e66a54c4e168d51ec2de1f7786f7b7ecf82f5009290",
+    "primary_landscape_size_px": [
+      1672,
+      941
+    ],
+    "square_emblem": "HOOOPLAAA_Official_Square_Emblem_v3.0.png",
+    "square_sha256": "7543f4e73d90a0b4c2e9f818c34900f68842ca266bf489f3dcd1bd17209bf278",
+    "social_display_picture_1080": "HOOOPLAAA_Official_DP_1080x1080_v3.0.png",
+    "social_display_picture_2048": "HOOOPLAAA_Official_DP_2048x2048_v3.0.png",
+    "transparent_vector_source_supplied": false,
+    "minimum_clear_space": "At least 8% of outer logo dimensions on all sides; illustration is not a substitute for source vector measurements.",
+    "small_size_rule": "Test legibility at actual display sizes; avoid forcing the full image into tiny avatars.",
+    "registered_mark_symbol": "® appears inside generated image; trademark registration not independently verified. Clear use before external publishing.",
+    "disallowed_claims": "No regional #1 claim, artificial social proof, guaranteed outcomes or partner-owned work as HOOOPLAAA-owned.",
+    "approved_visual_plates": [
+      "01_Cover_Official_Brand_Book.png",
+      "02_Brand_Foundation_And_Messaging.png",
+      "03_Brand_Identity_System.png",
+      "04_Visual_Language.png",
+      "05_Brand_Assets_And_Applications.png",
+      "06_Service_Architecture.png"
+    ],
+    "graphic_mockups": "Visual examples only; any verified badges, follower numbers, dates, sample contact names are fictional placeholders until independently substantiated."
+  },
+  "brand_book_source": "HOOOPLAAA_Official_Brand_Book_v2.0.md",
+  "knowledge_base_release": "2.0",
+  "release_change_log": [
+    {
+      "version": "3.0",
+      "date": "2026-11-21",
+      "change": "Replaces prior artwork with platinum/gold emerald growth emblem and six approved visual plates; unified premium brand book, brand kit and knowledge base. All service, package, bundle, add-on and pricing records remain identical to v2.0."
+    },
+    {
+      "version": "2.0",
+      "date": "2026-11-21",
+      "change": "Supersedes prior emerald/platinum logo with latest user-supplied global growth emblem; DP/source assets, brand system and all master documents unified; all commercial price pairs unchanged."
+    },
+    {
+      "version": "1.1",
+      "date": "2026-11-21",
+      "change": "Prior approved emerald/platinum brand system superseded for active logo use."
+    }
+  ],
+  "canonical_sources": {
+    "identity": "HOOOPLAAA_Official_Full_Logo_v1.1.png",
+    "brand_governance": "HOOOPLAAA_Official_Brand_Book_v1.1.md",
+    "commercial_pricing": "Pricing Revision 4.4 commercial decisions embedded in services/variants/bundles/specialized arrays",
+    "customer_specific": "signed quote/contract overrides general delivery scope but not trademark or ownership claims"
+  },
+  "brand_markers_note": "Current new artwork emphasizes growing bars + upward swoosh. No South Asia ranking claim in new master. “®” remains visible; trademark rights remain unverified.",
+  "source_hierarchy": {
+    "identity_artwork": "Official_Landscape_Logo_v3.0.png + Official_Square_Emblem_v3.0.png + six reference visual plates",
+    "brand_governance": "HOOOPLAAA_Official_Premium_Brand_Book_v3.0.md / pdf",
+    "service_database": "Official_Service_Database_v3.0.json — unchanged 26+6+3+22 records",
+    "commercial": "Official_Price_Ledger_v3.0 — unchanged 57 approved rows, anchored in Rev 4.4",
+    "client_commitment": "Signed scope and accepted quotation for each order",
+    "historical": "Legacy materials remain superseded and cannot overwrite current commercial facts"
+  }
+}

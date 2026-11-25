@@ -3,6 +3,7 @@
 import React, { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ShieldCheck, Lock, Mail, ArrowRight, Loader2 } from 'lucide-react';
+import { BRAND_V3 } from '@/domain/brand-v3';
 
 function LoginFormContent() {
   const router = useRouter();
@@ -41,30 +42,36 @@ function LoginFormContent() {
         router.push(redirectTo);
       }
       router.refresh();
-    } catch (err: any) {
-      setError(err.message || 'Sign in failed.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Sign in failed.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-16">
-      <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm space-y-6">
+    <div className="bg-brand-ivory py-16 px-4">
+      <div className="mx-auto max-w-md border border-brand-hairline bg-white p-8 space-y-6">
         <div className="space-y-2 text-center">
-          <div className="w-12 h-12 rounded-2xl bg-slate-900 text-amber-400 flex items-center justify-center mx-auto">
-            <Lock className="w-6 h-6" />
+          <div className="mx-auto flex h-12 w-12 items-center justify-center bg-brand-forest text-brand-gold">
+            <Lock className="h-5 w-5" />
           </div>
-          <h1 className="text-2xl font-extrabold text-slate-900">Sign In to HOOOPLAAA</h1>
-          <p className="text-xs text-slate-500">
-            Authenticated session required for order checkout, private onboarding, and staff operations.
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-emerald">
+            {BRAND_V3.legalName}
+          </p>
+          <h1 className="font-serif text-2xl font-semibold text-brand-forest">
+            Sign In to Your Workspace
+          </h1>
+          <p className="text-xs leading-relaxed text-brand-muted">
+            Authenticated session required for order checkout, private onboarding intake, and staff
+            operations.
           </p>
         </div>
 
         {error && (
           <div
             role="alert"
-            className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-xs font-medium text-red-700"
+            className="border border-red-300 bg-red-50 p-3.5 text-xs font-medium text-red-800"
           >
             {error}
           </div>
@@ -72,11 +79,14 @@ function LoginFormContent() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label htmlFor="login-email" className="block text-xs font-bold text-slate-700 mb-1">
+            <label
+              htmlFor="login-email"
+              className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-brand-forest"
+            >
               Email Address
             </label>
             <div className="relative">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <Mail className="absolute left-3.5 top-3 h-4 w-4 text-brand-muted" />
               <input
                 id="login-email"
                 name="email"
@@ -85,17 +95,20 @@ function LoginFormContent() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@company.com"
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                className="w-full border border-brand-hairline bg-brand-ivory/40 py-2.5 pl-10 pr-4 text-sm text-brand-forest focus:border-brand-forest focus:outline-none"
               />
             </div>
           </div>
 
           <div>
-            <label htmlFor="login-password" className="block text-xs font-bold text-slate-700 mb-1">
+            <label
+              htmlFor="login-password"
+              className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-brand-forest"
+            >
               Password
             </label>
             <div className="relative">
-              <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <Lock className="absolute left-3.5 top-3 h-4 w-4 text-brand-muted" />
               <input
                 id="login-password"
                 name="password"
@@ -104,7 +117,7 @@ function LoginFormContent() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••••••"
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                className="w-full border border-brand-hairline bg-brand-ivory/40 py-2.5 pl-10 pr-4 text-sm text-brand-forest focus:border-brand-forest focus:outline-none"
               />
             </div>
           </div>
@@ -113,25 +126,25 @@ function LoginFormContent() {
             type="submit"
             disabled={loading}
             data-testid="login-submit-btn"
-            className="w-full py-3 px-5 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-slate-800 transition flex items-center justify-center gap-2 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 bg-brand-forest py-3 px-5 text-xs font-bold uppercase tracking-[0.16em] text-brand-ivory transition-colors hover:bg-brand-teal disabled:opacity-50"
           >
             {loading ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Verifying Session...
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Verifying Session...</span>
               </>
             ) : (
               <>
-                Sign In Securely
-                <ArrowRight className="w-4 h-4" />
+                <span>Sign In Securely</span>
+                <ArrowRight className="h-4 w-4 text-brand-gold" />
               </>
             )}
           </button>
         </form>
 
-        <div className="pt-4 border-t border-slate-100 flex items-center gap-2 text-[11px] text-slate-500">
-          <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span>Server-verified RBAC & multi-tenant Row-Level Security enforced.</span>
+        <div className="flex items-center gap-2 border-t border-brand-hairline pt-4 text-[11px] text-brand-muted">
+          <ShieldCheck className="h-4 w-4 shrink-0 text-brand-emerald" />
+          <span>Server-verified RBAC &amp; multi-tenant Row-Level Security enforced.</span>
         </div>
       </div>
     </div>
@@ -140,7 +153,11 @@ function LoginFormContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="py-20 text-center text-xs text-slate-500">Loading Sign In...</div>}>
+    <Suspense
+      fallback={
+        <div className="py-20 text-center text-xs text-brand-muted">Loading Sign In...</div>
+      }
+    >
       <LoginFormContent />
     </Suspense>
   );
